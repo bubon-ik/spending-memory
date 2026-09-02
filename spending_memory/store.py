@@ -18,8 +18,10 @@ here means spending someone else's money.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from sibyl_memory_client import MemoryClient, NotFoundError
@@ -34,6 +36,28 @@ SPEND_STATE_PREFIX = "spend"
 
 PRICE_HISTORY_LIMIT = 20
 """How many past prices to keep per merchant. Enough for a stable median."""
+
+CREDENTIALS_PATH = "~/.sibyl-memory/credentials.json"
+"""Where `sibyl init` writes the activated account."""
+
+
+def tenant_from_credentials(path: str = CREDENTIALS_PATH) -> str | None:
+    """Read the activated account's tenant, the way the `sibyl` CLI does.
+
+    One SQLite file holds several tenants, so opening it with the wrong one
+    reads an empty database rather than failing. Without this the host
+    application would write under the anonymous default tenant while
+    `sibyl memory recall` looked under the account — same file, nothing found,
+    and no error anywhere to explain it.
+    """
+    try:
+        creds = json.loads(Path(path).expanduser().read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(creds, dict):
+        return None
+    tenant = creds.get("tenant_id") or creds.get("account_id")
+    return str(tenant) if tenant else None
 
 
 def utc_today() -> str:
@@ -58,7 +82,21 @@ class SpendingMemory:
         self._client = client
 
     @classmethod
-    def local(cls, path: str = "~/.sibyl-memory/memory.db") -> "SpendingMemory":
+    def local(
+        cls,
+        path: str = "~/.sibyl-memory/memory.db",
+        *,
+        tenant_id: str | None = None,
+        credentials_path: str = CREDENTIALS_PATH,
+    ) -> "SpendingMemory":
+        """Open the local database as the activated account.
+
+        Falls back to the client's anonymous default when `sibyl init` has not
+        been run, so tests and the demo work without an account.
+        """
+        tenant = tenant_id or tenant_from_credentials(credentials_path)
+        if tenant:
+            return cls(MemoryClient.local(path, tenant_id=tenant))
         return cls(MemoryClient.local(path))
 
     # ---------------------------------------------------------------- reads

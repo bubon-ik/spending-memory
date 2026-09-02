@@ -241,3 +241,41 @@ def test_not_recording_leaves_no_journal_id(
 ) -> None:
     settle(memory, times=2)
     assert policy.decide(payment(), record=False).journal_id is None
+
+
+# ------------------------------------------- the account the CLI reads
+
+
+def test_the_activated_account_is_used(tmp_path) -> None:
+    """Written by the gateway, readable by `sibyl memory recall`.
+
+    One SQLite file holds several tenants. Open it as the wrong one and the
+    read is empty rather than an error, so this mismatch is silent — the demo
+    would show a merchant the CLI cannot find.
+    """
+    creds = tmp_path / "credentials.json"
+    creds.write_text('{"account_id": "4294ae4b-f8fb", "tier": "free"}')
+    db = str(tmp_path / "memory.db")
+
+    as_account = SpendingMemory.local(db, credentials_path=str(creds))
+    as_account.remember_settlement(payment())
+
+    same = SpendingMemory.local(db, credentials_path=str(creds))
+    assert same.recall_merchant("bitrefill-amazon-de") is not None
+
+    anonymous = SpendingMemory.local(db, credentials_path=str(tmp_path / "none.json"))
+    assert anonymous.recall_merchant("bitrefill-amazon-de") is None
+
+
+def test_tenant_id_is_preferred_over_account_id(tmp_path) -> None:
+    creds = tmp_path / "credentials.json"
+    creds.write_text('{"tenant_id": "tenant-1", "account_id": "account-1"}')
+    from spending_memory.store import tenant_from_credentials
+
+    assert tenant_from_credentials(str(creds)) == "tenant-1"
+
+
+def test_missing_credentials_fall_back_to_anonymous(tmp_path) -> None:
+    from spending_memory.store import tenant_from_credentials
+
+    assert tenant_from_credentials(str(tmp_path / "absent.json")) is None
