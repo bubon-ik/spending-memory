@@ -12,6 +12,14 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+DEFAULT_OWNER = "default"
+"""Owner used when the host application has only one.
+
+A single-owner deployment should not have to invent an identifier, but the
+identifier has to exist: two owners sharing one budget is a bug that only shows
+up once the second one arrives.
+"""
+
 
 class Action(str, Enum):
     """What the gateway should do with a proposed payment."""
@@ -33,6 +41,13 @@ class Payment:
     merchant: str
     pay_to: str
     amount_usd: Decimal
+    owner: str = DEFAULT_OWNER
+    """Whose money this is.
+
+    Required in substance, defaulted in form: budgets, rejections and approvals
+    all belong to a person, and one process serves several of them. What the
+    fleet learns about a merchant is shared; what one owner decided is not.
+    """
     resource: str | None = None
 
     def __post_init__(self) -> None:
@@ -40,6 +55,8 @@ class Payment:
             raise ValueError("merchant is required")
         if not self.pay_to:
             raise ValueError("pay_to is required")
+        if not self.owner:
+            raise ValueError("owner is required")
         if self.amount_usd <= 0:
             raise ValueError("amount_usd must be positive")
 
@@ -50,14 +67,20 @@ class Payment:
 
 @dataclass(frozen=True)
 class MerchantMemory:
-    """What memory holds about one merchant. Built by `store.py`, never by hand."""
+    """What the fleet knows about one merchant. Built by `store.py`, never by hand.
+
+    Everything here is shared across owners, because it is a fact about the
+    merchant rather than an opinion about them: the address they are actually
+    paid at, how often they have been paid, what they charge. One owner's
+    refusal lives in the preference record instead, so it cannot silence a
+    merchant for everybody.
+    """
 
     merchant: str
     pay_to: str
     payment_count: int
     prices_usd: tuple[Decimal, ...]
-    rejected: bool = False
-    rejected_reason: str | None = None
+    last_settled_at: str | None = None
 
     @property
     def typical_usd(self) -> Decimal:

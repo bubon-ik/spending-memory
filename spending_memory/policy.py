@@ -11,12 +11,18 @@ bad each case is:
     4. price unlike the usual price -> ESCALATE  (we know what it costs)
     5. over the daily cap           -> ESCALATE  (we know what today looks like)
                                     -> PAY
+
+Rules 1, 2 and 4 read what the whole fleet has learned about the merchant.
+Rules 3 and 5 read one owner's own record, because being told no and running
+out of allowance belong to a person rather than to a merchant.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
+
+from typing import Any
 
 from .store import SpendingMemory
 from .types import Action, Decision, MerchantMemory, Payment
@@ -48,8 +54,9 @@ class SpendingPolicy:
 
     def decide(self, payment: Payment, *, record: bool = True) -> Decision:
         known = self.memory.recall_merchant(payment.merchant)
-        spent = self.memory.spent_today()
-        decision = self._evaluate(payment, known, spent)
+        preference = self.memory.recall_preference(payment.owner, payment.merchant)
+        spent = self.memory.spent_today(payment.owner)
+        decision = self._evaluate(payment, known, preference, spent)
         if record:
             decision = replace(
                 decision, journal_id=self.memory.record_decision(payment, decision)
@@ -62,6 +69,7 @@ class SpendingPolicy:
         self,
         payment: Payment,
         known: MerchantMemory | None,
+        preference: dict[str, Any],
         spent_today: Decimal,
     ) -> Decision:
         if known is None or known.payment_count == 0:
@@ -92,16 +100,16 @@ class SpendingPolicy:
                 },
             )
 
-        if known.rejected:
+        if preference["rejected"]:
             return Decision(
                 action=Action.ESCALATE,
                 rule="previously_rejected",
                 reason=(
                     f"You turned down {payment.merchant} before"
-                    + (f": {known.rejected_reason}." if known.rejected_reason else ".")
+                    + (f": {preference['reason']}." if preference["reason"] else ".")
                     + " Asking again rather than assuming that changed."
                 ),
-                evidence={"rejected_reason": known.rejected_reason},
+                evidence={"rejected_reason": preference["reason"]},
             )
 
         typical = known.typical_usd

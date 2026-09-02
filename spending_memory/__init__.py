@@ -16,10 +16,11 @@
 
 from .policy import PRICE_SPIKE_FACTOR, SpendingPolicy
 from .store import SpendingMemory
-from .types import Action, Decision, MerchantMemory, Payment
+from .types import DEFAULT_OWNER, Action, Decision, MerchantMemory, Payment
 
 __all__ = [
     "Action",
+    "DEFAULT_OWNER",
     "Decision",
     "MerchantMemory",
     "PRICE_SPIKE_FACTOR",
@@ -28,4 +29,4 @@ __all__ = [
     "SpendingPolicy",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

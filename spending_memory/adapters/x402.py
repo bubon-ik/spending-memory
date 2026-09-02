@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from ..policy import SpendingPolicy
 from ..store import SpendingMemory
-from ..types import Payment
+from ..types import DEFAULT_OWNER, Payment
 
 USDC_DECIMALS = 6
 """Base USDC. Pass `decimals=` explicitly for anything else."""
@@ -57,6 +57,7 @@ def to_payment(
     resource_url: str,
     *,
     decimals: int = USDC_DECIMALS,
+    owner: str = DEFAULT_OWNER,
 ) -> Payment:
     """Map one x402 requirements block onto a `Payment`.
 
@@ -64,6 +65,11 @@ def to_payment(
     the merchant is allowed to take, so it is the number worth deciding on — a
     scheme that settles for less cannot surprise you, one that asks for more
     cannot get past the check.
+
+    `owner` says whose budget this is charged against. It has a default so a
+    host with one user can adopt this without changing any call site, and a
+    host with many can pass its user id and get separate budgets, separate
+    rejections, and one shared view of the merchant.
     """
     for field in ("payTo", "maxAmountRequired"):
         if not payment_requirements.get(field):
@@ -74,6 +80,7 @@ def to_payment(
         merchant=merchant_key(resource_url),
         pay_to=str(payment_requirements["payTo"]),
         amount_usd=atomic / (Decimal(10) ** decimals),
+        owner=owner,
         resource=resource_url,
     )
 

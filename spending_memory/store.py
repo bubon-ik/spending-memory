@@ -10,6 +10,19 @@ are looking for the load-bearing memory calls, they are all in this file:
     write  MemoryClient.set_state    -> the daily total after every payment
     write  MemoryClient.write_event  -> one journal line per decision
 
+One process serves several owners out of one database, so the records are split
+by who they belong to:
+
+    merchant       shared     what the merchant is: payout address, prices, count
+    merchant_pref  per owner  what one owner decided about them, and their own count
+    spend:<owner>  per owner  what that owner has spent today
+
+The split is the point. A payout address learned while serving one owner
+protects all of them — the fleet notices a moved address faster than any public
+directory updates. A refusal is the opposite: it is one person's opinion, and
+letting it silence a merchant for everybody would be a bug that only shows up
+once the second owner arrives.
+
 There is deliberately no in-process fallback. `SpendingMemory` requires a live
 `MemoryClient`; construct it without one and it raises. That is the design: an
 agent that cannot read its history is not allowed to guess, because guessing
@@ -26,13 +39,20 @@ from typing import Any
 
 from sibyl_memory_client import MemoryClient, NotFoundError
 
-from .types import Decision, MerchantMemory, Payment
+from .types import DEFAULT_OWNER, Decision, MerchantMemory, Payment
 
 MERCHANT_CATEGORY = "merchant"
-"""Sibyl WARM tier: one record per merchant, source of truth for its payout address."""
+"""Sibyl WARM tier: one record per merchant, shared by every owner.
+
+Source of truth for the payout address, and the reason the fleet learns
+together rather than one owner at a time.
+"""
+
+PREFERENCE_CATEGORY = "merchant_pref"
+"""Sibyl WARM tier: `<owner>:<merchant>`, one owner's standing opinion."""
 
 SPEND_STATE_PREFIX = "spend"
-"""Sibyl HOT tier: `spend:<utc-date>`, rewritten in place all day."""
+"""Sibyl HOT tier: `spend:<owner>:<utc-date>`, rewritten in place all day."""
 
 PRICE_HISTORY_LIMIT = 20
 """How many past prices to keep per merchant. Enough for a stable median."""
@@ -64,10 +84,19 @@ def utc_today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def preference_key(owner: str, merchant: str) -> str:
+    """Where one owner's opinion of one merchant lives."""
+    return f"{owner}:{merchant}"
+
+
 def _decimals(values: Any) -> tuple[Decimal, ...]:
     if not values:
         return ()
     return tuple(Decimal(str(v)) for v in values)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SpendingMemory:
@@ -102,7 +131,7 @@ class SpendingMemory:
     # ---------------------------------------------------------------- reads
 
     def recall_merchant(self, merchant: str) -> MerchantMemory | None:
-        """What we know about this merchant, or None if we have never paid them."""
+        """What the fleet knows about this merchant, or None if nobody has paid them."""
         try:
             record = self._client.get_entity(MERCHANT_CATEGORY, merchant)
         except NotFoundError:
@@ -113,17 +142,40 @@ class SpendingMemory:
             pay_to=str(body.get("pay_to", "")).strip().lower(),
             payment_count=int(body.get("payment_count", 0)),
             prices_usd=_decimals(body.get("prices_usd")),
-            rejected=bool(body.get("rejected", False)),
-            rejected_reason=body.get("rejected_reason"),
+            last_settled_at=body.get("last_settled_at"),
         )
 
-    def spent_today(self, *, day: str | None = None) -> Decimal:
-        """Total settled so far in the current UTC day.
+    def recall_preference(self, owner: str, merchant: str) -> dict[str, Any]:
+        """What this one owner decided about this merchant.
+
+        Absent is not the same as empty everywhere else in this file, but here
+        it is: an owner who has never met a merchant has no opinion of them,
+        and the shared record already says what the merchant is.
+        """
+        try:
+            record = self._client.get_entity(
+                PREFERENCE_CATEGORY, preference_key(owner, merchant)
+            )
+        except NotFoundError:
+            return {"rejected": False, "reason": None, "own_count": 0}
+        body = record.get("body") or {}
+        return {
+            "rejected": bool(body.get("rejected", False)),
+            "reason": body.get("rejected_reason"),
+            "own_count": int(body.get("own_count", 0)),
+        }
+
+    def spent_today(
+        self, owner: str = DEFAULT_OWNER, *, day: str | None = None
+    ) -> Decimal:
+        """Total this owner has settled so far in the current UTC day.
 
         This is the number a restart must not lose. Hold it in process memory
-        instead and the daily cap silently resets every deploy.
+        instead and the daily cap silently resets every deploy. It is keyed by
+        owner because a shared bucket would let one owner spend another's
+        allowance without either of them doing anything wrong.
         """
-        state = self._client.get_state(f"{SPEND_STATE_PREFIX}:{day or utc_today()}")
+        state = self._client.get_state(self._spend_key(owner, day))
         if not state:
             return Decimal("0")
         body = state.get("body") or {}
@@ -148,7 +200,8 @@ class SpendingMemory:
         """Record a payment that actually settled.
 
         This is what turns an unknown merchant into a known one, and what makes
-        the *next* purchase from them decidable without a human.
+        the *next* purchase from them decidable without a human — including the
+        next one for a different owner, who has never paid them before.
         """
         known = self.recall_merchant(payment.merchant)
         prices = list(known.prices_usd) if known else []
@@ -159,17 +212,29 @@ class SpendingMemory:
             "pay_to": payment.pay_to_normalised,
             "payment_count": (known.payment_count if known else 0) + 1,
             "prices_usd": [str(p) for p in prices],
-            "rejected": False,
-            "rejected_reason": None,
             "last_resource": payment.resource,
-            "last_settled_at": datetime.now(timezone.utc).isoformat(),
+            "last_settled_at": _now(),
         }
         self._client.set_entity(MERCHANT_CATEGORY, payment.merchant, body)
 
+        # Settling is this owner saying yes, so it also retires whatever they
+        # said no to before. Their count is kept apart from the fleet's: it is
+        # what "you have paid them twice" means when the sentence is shown to
+        # one person.
+        preference = self.recall_preference(payment.owner, payment.merchant)
+        self._write_preference(
+            payment.owner,
+            payment.merchant,
+            rejected=False,
+            rejected_reason=None,
+            own_count=preference["own_count"] + 1,
+            last_settled_at=_now(),
+        )
+
         today = day or utc_today()
-        total = self.spent_today(day=today) + payment.amount_usd
+        total = self.spent_today(payment.owner, day=today) + payment.amount_usd
         self._client.set_state(
-            f"{SPEND_STATE_PREFIX}:{today}", {"total_usd": str(total)}
+            self._spend_key(payment.owner, today), {"total_usd": str(total)}
         )
 
         self._client.write_event(
@@ -178,27 +243,39 @@ class SpendingMemory:
                 f"at {payment.pay_to_normalised}"
                 + (f" tx={tx_id}" if tx_id else "")
             ],
-            extra={"merchant": payment.merchant, "tx_id": tx_id},
+            extra={
+                "merchant": payment.merchant,
+                "owner": payment.owner,
+                "tx_id": tx_id,
+            },
         )
         recalled = self.recall_merchant(payment.merchant)
         assert recalled is not None  # just written
         return recalled
 
     def remember_rejection(self, payment: Payment, *, reason: str) -> None:
-        """Record that the owner said no. A refusal is training, not an incident."""
-        known = self.recall_merchant(payment.merchant)
-        body = {
-            "pay_to": known.pay_to if known else payment.pay_to_normalised,
-            "payment_count": known.payment_count if known else 0,
-            "prices_usd": [str(p) for p in (known.prices_usd if known else ())],
-            "rejected": True,
-            "rejected_reason": reason,
-            "rejected_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._client.set_entity(MERCHANT_CATEGORY, payment.merchant, body)
+        """Record that this owner said no. A refusal is training, not an incident.
+
+        Written to the owner's preference record and nowhere else. A rejection
+        is an opinion, and the shared merchant record holds facts — one user
+        turning down a shop must not stop everybody else from buying there.
+        """
+        self._write_preference(
+            payment.owner,
+            payment.merchant,
+            rejected=True,
+            rejected_reason=reason,
+            rejected_at=_now(),
+        )
         self._client.write_event(
-            acted=[f"owner rejected {payment.amount_usd} USD to {payment.merchant}: {reason}"],
-            extra={"merchant": payment.merchant, "rejected": True},
+            acted=[
+                f"owner rejected {payment.amount_usd} USD to {payment.merchant}: {reason}"
+            ],
+            extra={
+                "merchant": payment.merchant,
+                "owner": payment.owner,
+                "rejected": True,
+            },
         )
 
     def record_decision(self, payment: Payment, decision: Decision) -> str:
@@ -212,5 +289,28 @@ class SpendingMemory:
                 f"{payment.merchant} {payment.amount_usd} USD -> {payment.pay_to_normalised}"
             ],
             acted=[f"{decision.action.value}: {decision.reason}"],
-            extra={"rule": decision.rule, **decision.evidence},
+            extra={
+                "rule": decision.rule,
+                "owner": payment.owner,
+                **decision.evidence,
+            },
         )
+
+    # -------------------------------------------------------------- internals
+
+    def _spend_key(self, owner: str, day: str | None = None) -> str:
+        return f"{SPEND_STATE_PREFIX}:{owner}:{day or utc_today()}"
+
+    def _write_preference(self, owner: str, merchant: str, **updates: Any) -> None:
+        """Merge into one owner's record, leaving the fields it does not mention.
+
+        A settlement should not erase why they rejected the merchant last month,
+        and a rejection should not reset their count.
+        """
+        key = preference_key(owner, merchant)
+        try:
+            existing = self._client.get_entity(PREFERENCE_CATEGORY, key).get("body") or {}
+        except NotFoundError:
+            existing = {}
+        body = {**existing, **updates, "owner": owner, "merchant": merchant}
+        self._client.set_entity(PREFERENCE_CATEGORY, key, body)
