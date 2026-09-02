@@ -17,6 +17,7 @@ by who they belong to:
     merchant_alert shared     an unresolved warning: this merchant's address moved
     merchant_pref  per owner  what one owner decided about them, and their own count
     spend:<owner>  per owner  what that owner has spent today
+    claim:<owner>  per owner  a payment being made right now, so it is made once
 
 The split is the point. A payout address learned while serving one owner
 protects all of them — the fleet notices a moved address faster than any public
@@ -32,7 +33,9 @@ here means spending someone else's money.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -83,6 +86,16 @@ def merchant_status(payment_count: int) -> str:
             return status
     return "new"
 
+CLAIM_STATE_PREFIX = "claim"
+"""Sibyl HOT tier: `claim:<owner>:<digest>`, the right to make one payment."""
+
+CLAIM_TTL_SECONDS = 120
+"""How long a claim is held before an unfinished attempt is assumed dead.
+
+Long enough to cover a human tapping approve, short enough that a crashed
+process does not lock a merchant out for the rest of the day.
+"""
+
 DORMANT_AFTER_DAYS = 90
 """How long a merchant may go unpaid before its record is put away."""
 
@@ -132,14 +145,41 @@ def _now() -> str:
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
-    """Read a timestamp this module wrote, treating anything unreadable as absent."""
+    """Read a timestamp, treating anything unreadable as absent.
+
+    Sibyl stamps journal entries `…Z` while this module writes `…+00:00`, and
+    only Python 3.11 learned to read the first one. Both are the same instant
+    and both have to parse here, or every journal read silently returns
+    nothing on 3.10.
+    """
     if not value:
         return None
+    text = str(value)
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
     try:
-        parsed = datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def claim_digest(payment: Payment) -> str:
+    """Stable identity for "this exact payment", short enough to be a key.
+
+    Owner, merchant, payout address and amount: change any of them and it is a
+    different intention to spend. Hashed rather than spelled out because a
+    state key is not the place to publish who pays whom how much.
+    """
+    material = "|".join(
+        [
+            payment.owner,
+            payment.merchant,
+            payment.pay_to_normalised,
+            str(payment.amount_usd),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
 class SpendingMemory:
@@ -295,6 +335,18 @@ class SpendingMemory:
         body = state.get("body") or {}
         return Decimal(str(body.get("total_usd", "0")))
 
+    def existing_claim(self, payment: Payment) -> dict[str, Any] | None:
+        """The claim standing in the way of this payment, if there is one."""
+        state = self._client.get_state(self._claim_key(payment))
+        if not state:
+            return None
+        body = dict(state.get("body") or {})
+        if body.get("status") == "settled":
+            return body
+        if body.get("status") == "held" and not self._claim_expired(body):
+            return body
+        return None
+
     def journal(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """Recent decisions, newest first. Answers "why did you buy that"."""
         return self._client.read_events(limit=limit)
@@ -435,6 +487,58 @@ class SpendingMemory:
             )
         return archived
 
+    def claim_payment(
+        self, payment: Payment, *, ttl_seconds: int = CLAIM_TTL_SECONDS
+    ) -> str | None:
+        """Claim the right to make this payment. None means someone already has it.
+
+        The key is derived from owner, merchant, payout address and amount.
+        Inside the TTL an identical request is a retry — a double-tapped
+        button, a client that resent after a timeout, a queue that redelivered
+        — not a second intention to spend. Returning None is how the caller
+        learns to stop.
+
+        The claim lives in memory rather than in the caller's process, which is
+        the whole point: a hold that a deploy forgets is a hold that lets the
+        same purchase happen twice.
+        """
+        key = self._claim_key(payment)
+        state = self._client.get_state(key)
+        body = dict((state or {}).get("body") or {})
+
+        if body:
+            # Settled is permanent, expiry or not. That is the replay
+            # protection: a payment that already went through can never be
+            # re-claimed by a redelivered request an hour later.
+            if body.get("status") == "settled":
+                return None
+            if body.get("status") == "held" and not self._claim_expired(body):
+                return None
+
+        now = datetime.now(timezone.utc)
+        claim_id = f"{key}#{secrets.token_hex(8)}"
+        self._client.set_state(
+            key,
+            {
+                "claim_id": claim_id,
+                "status": "held",
+                "claimed_at": now.isoformat(),
+                "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
+                "merchant": payment.merchant,
+                "owner": payment.owner,
+                "amount_usd": str(payment.amount_usd),
+            },
+        )
+        return claim_id
+
+    def settle_claim(self, claim_id: str, *, tx_id: str | None = None) -> None:
+        """Mark the claim spent. It is never reusable again, TTL or not."""
+        self._update_claim(claim_id, status="settled", tx_id=tx_id)
+
+    def release_claim(self, claim_id: str) -> None:
+        """Give the claim back after a rejection, timeout or error."""
+        self._update_claim(claim_id, status="released")
+
     def record_decision(self, payment: Payment, decision: Decision) -> str:
         """One journal line per decision, whatever the outcome.
 
@@ -447,13 +551,53 @@ class SpendingMemory:
             ],
             acted=[f"{decision.action.value}: {decision.reason}"],
             extra={
-                "rule": decision.rule,
-                "owner": payment.owner,
                 **decision.evidence,
+                # After the evidence, not before: these three are what the
+                # journal is *queried* by, so nothing a rule happens to put in
+                # its evidence may shadow them.
+                "rule": decision.rule,
+                "action": decision.action.value,
+                "owner": payment.owner,
+                "merchant": payment.merchant,
             },
         )
 
     # -------------------------------------------------------------- internals
+
+    def _claim_key(self, payment: Payment) -> str:
+        return f"{CLAIM_STATE_PREFIX}:{payment.owner}:{claim_digest(payment)}"
+
+    @staticmethod
+    def _claim_expired(body: dict[str, Any]) -> bool:
+        """Judged against the stored deadline, never against process uptime.
+
+        A restart must not shorten or extend a claim someone else is holding.
+        """
+        expires_at = _parse_timestamp(body.get("expires_at"))
+        if expires_at is None:
+            return True
+        return datetime.now(timezone.utc) >= expires_at
+
+    def _update_claim(self, claim_id: str, *, status: str, **extra: Any) -> None:
+        """Move a claim to its final state, if it is still the same claim.
+
+        A claim id that has been superseded — released, then re-taken by
+        another attempt — must not be able to settle the claim that replaced
+        it, so the id is checked against the stored one before anything moves.
+        """
+        key, _, _ = claim_id.rpartition("#")
+        if not key:
+            return
+        state = self._client.get_state(key)
+        body = dict((state or {}).get("body") or {})
+        if body.get("claim_id") != claim_id:
+            return
+        body.update(
+            {k: v for k, v in extra.items() if v is not None},
+        )
+        body["status"] = status
+        body[f"{status}_at"] = _now()
+        self._client.set_state(key, body)
 
     def _spend_key(self, owner: str, day: str | None = None) -> str:
         return f"{SPEND_STATE_PREFIX}:{owner}:{day or utc_today()}"

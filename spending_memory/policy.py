@@ -5,6 +5,7 @@ memory and the function has no inputs — which is the point. The five rules run
 in order, and the first one that fires wins, because the ordering encodes how
 bad each case is:
 
+    0. the same payment is in flight -> BLOCK    (or already went through)
     1. never paid this merchant     -> ESCALATE  (we know nothing)
     1b. an alert is open on them    -> BLOCK     (someone already saw this)
     2. payout address changed       -> BLOCK     (we know something is wrong)
@@ -17,6 +18,10 @@ bad each case is:
 Rules 1, 1b, 2 and 4 read what the whole fleet has learned about the merchant.
 Rules 3 and 5 read one owner's own record, because being told no and running
 out of allowance belong to a person rather than to a merchant.
+
+Rule 0 is not in `decide` at all: deciding is not spending, so the claim is
+taken by `authorise`, which is the call that means "and now I am going to do
+it". Everything else here answers a question and changes nothing.
 
 Rule 1b sits above the address check on purpose: an alert someone else already
 raised is the strongest thing we can know about a merchant. It is also the one
@@ -32,7 +37,7 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any
 
-from .store import SpendingMemory
+from .store import CLAIM_TTL_SECONDS, SpendingMemory
 from .types import Action, Decision, MerchantMemory, Payment
 
 PRICE_SPIKE_FACTOR = Decimal("3")
@@ -98,11 +103,13 @@ class SpendingPolicy:
         *,
         daily_cap_usd: Decimal,
         price_spike_factor: Decimal | None = None,
+        claim_ttl_seconds: int = CLAIM_TTL_SECONDS,
     ) -> None:
         if daily_cap_usd <= 0:
             raise ValueError("daily_cap_usd must be positive")
         self.memory = memory
         self.daily_cap_usd = daily_cap_usd
+        self.claim_ttl_seconds = claim_ttl_seconds
         self.price_spike_factor = price_spike_factor
         """One band for every merchant, or None to choose it by their status."""
 
@@ -112,6 +119,14 @@ class SpendingPolicy:
         return PRICE_SPIKE_FACTORS.get(status, PRICE_SPIKE_FACTOR)
 
     def decide(self, payment: Payment, *, record: bool = True) -> Decision:
+        decision = self._decide_without_recording(payment)
+        if record:
+            decision = replace(
+                decision, journal_id=self.memory.record_decision(payment, decision)
+            )
+        return decision
+
+    def _decide_without_recording(self, payment: Payment) -> Decision:
         known = self.memory.recall_merchant(payment.merchant)
         preference = self.memory.recall_preference(payment.owner, payment.merchant)
         alert = self.memory.open_alert(payment.merchant)
@@ -129,11 +144,60 @@ class SpendingPolicy:
                 raised_by=payment.owner,
             )
 
-        if record:
-            decision = replace(
-                decision, journal_id=self.memory.record_decision(payment, decision)
-            )
         return decision
+
+    def authorise(self, payment: Payment) -> tuple[Decision, str | None]:
+        """Decide, and if the answer is PAY, take the claim.
+
+        Returns the decision and the claim id. A PAY always comes back with a
+        claim id: if the claim cannot be taken, the decision is not a PAY at
+        all, because an identical payment is already on its way and sending a
+        second one is the failure this exists to prevent.
+
+        Settle the claim when the money moves, release it when it does not.
+        Deciding is separate from claiming on purpose — `decide` answers a
+        question, `authorise` starts something.
+        """
+        decision = self._decide_without_recording(payment)
+        claim_id: str | None = None
+
+        if decision.action is Action.PAY:
+            claim_id = self.memory.claim_payment(
+                payment, ttl_seconds=self.claim_ttl_seconds
+            )
+            if claim_id is None:
+                decision = self._already_in_flight(payment)
+
+        return (
+            replace(
+                decision, journal_id=self.memory.record_decision(payment, decision)
+            ),
+            claim_id,
+        )
+
+    def _already_in_flight(self, payment: Payment) -> Decision:
+        held = self.memory.existing_claim(payment) or {}
+        settled = held.get("status") == "settled"
+        return Decision(
+            action=Action.BLOCK,
+            rule="already_in_flight",
+            reason=(
+                f"An identical payment to {payment.merchant} for "
+                f"{payment.amount_usd} USD "
+                + (
+                    "already went through. I am not sending it twice."
+                    if settled
+                    else "was already started a moment ago and has not "
+                    "finished. I am not sending a second one."
+                )
+            ),
+            evidence={
+                "merchant": payment.merchant,
+                "quoted_usd": str(payment.amount_usd),
+                "claim_status": str(held.get("status") or "held"),
+                "claimed_at": held.get("claimed_at"),
+            },
+        )
 
     # ------------------------------------------------------------------ rules
 
