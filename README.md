@@ -25,11 +25,13 @@ It is the only module in the package that imports Sibyl, on purpose.
 | `get_entity("merchant_alert", …)` | WARM | Whether another agent already refused this merchant |
 | `get_entity("merchant_pref", …)` | WARM | Whether *this* owner said no to them before |
 | `get_state("spend:<owner>:<date>")` | HOT | How much of this owner's limit is already gone |
-| `read_events()` | COLD | Why a past purchase was made, when the owner asks |
+| `read_events()` | COLD | Whether this merchant keeps being escalated — read back to decide, not only to explain |
+| `get_state("claim:<owner>:<digest>")` | HOT | Whether this exact payment is already on its way |
 | `set_entity("merchant", …, status=…)` | WARM | — writes a merchant into existence, and promotes it as it earns evidence |
 | `set_entity("merchant_alert", …)` | WARM | — warns every other agent that an address moved |
 | `set_state("spend:<owner>:<date>")` | HOT | — the running daily total, after every payment |
-| `write_event(…)` | COLD | — one journal line per decision |
+| `set_state("claim:<owner>:<digest>")` | HOT | — claims a payment before it is made, so it is made once |
+| `write_event(…)` | COLD | — one journal line per decision, with what the rules query on |
 | `list_entities` / `archive_entity` | WARM | — puts dormant merchants away so they are asked about again |
 
 The decision itself is [`spending_memory/policy.py`](spending_memory/policy.py),
@@ -102,14 +104,23 @@ memory = SpendingMemory.local()                       # ~/.sibyl-memory/memory.d
 policy = SpendingPolicy(memory, daily_cap_usd=Decimal("50"))
 
 payment = Payment("bitrefill-amazon-de", "0x8f3a…", Decimal("25"))
-decision = policy.decide(payment)                     # add owner="…" for many users
+decision, claim = policy.authorise(payment)           # add owner="…" for many users
 
 if decision.needs_human:
     ask_the_owner(decision.reason)                    # iMessage, WhatsApp, hardware
 else:
-    tx = settle(payment)
+    try:
+        tx = settle(payment)                          # `claim` is not None here
+    except PaymentFailed:
+        memory.release_claim(claim)                   # someone may try again
+        raise
+    memory.settle_claim(claim, tx_id=tx)              # never claimable again
     memory.remember_settlement(payment, tx_id=tx)     # the next one decides itself
 ```
+
+Only a PAY takes a claim, so a decision that needs a human never holds one.
+`policy.decide(payment)` answers the same question without claiming anything,
+for a caller that only wants to know.
 
 `SpendingMemory` will not construct without a live `MemoryClient`. There is no
 memoryless mode by design: an agent that cannot read its history is not allowed
@@ -121,12 +132,14 @@ They run in order, first match wins, and the ordering is the severity ordering.
 
 | # | When | Then | Because |
 |---|---|---|---|
+| 0 | An identical payment is already in flight | **refuse** | It is one purchase, retried |
 | 1 | Never paid this merchant | **ask** | We know nothing |
 | 1b | Another agent raised an alert on them | **refuse** | Someone already saw this |
 | 2 | Payout address differs from the remembered one | **refuse** | We know something is wrong |
 | 3 | This owner rejected them before | **ask** | We were told no, once |
 | 4 | Quote is over the band for their status | **ask** | We know what it costs |
 | 5 | Over this owner's daily cap | **ask** | We know what today looks like |
+| 6 | Escalated three times in the last hour | **refuse** | The journal says something changed |
 | — | Otherwise | **pay** | Everything matches memory |
 
 Prices use the **median** of the last twenty, not the mean: one mispriced
@@ -166,6 +179,20 @@ again — without ever learning who raised it.
 Run the opposite arrangement and the defect is obvious: with one shared record,
 one user saying "not this shop again" silences that shop for everybody.
 
+### A payment is claimed before it is made
+
+Approval takes minutes, and in those minutes the same purchase can arrive again
+— a double-tapped button, a client that resent after a timeout, a queue that
+redelivered. So `authorise` takes a claim in memory, keyed by owner, merchant,
+payout address and amount, and a second identical attempt is refused rather
+than paid.
+
+Held in memory rather than in the process, the claim survives the deploy that
+happens mid-approval; `tests/test_work_claim.py` claims in one interpreter and
+fails to re-claim in another. And a **settled** claim is never re-claimable,
+expiry or not — that asymmetry is the replay protection, because a redelivered
+request an hour later is exactly when an expiry-only check would pay twice.
+
 ### The record changes with use
 
 A merchant is not a fixed row. Every settlement recomputes its status on the
@@ -179,6 +206,20 @@ And a merchant nobody has paid in ninety days is archived, which makes it
 unknown again, so the next purchase asks. Storage that only grows would keep
 treating a year-old address as current. This one forgets on purpose, and
 recoverably — the record moves to ARCHIVE rather than being deleted.
+
+### The journal is read, not only written
+
+A journal nobody reads is ten thousand rows of nothing. Rule 6 reads it: three
+escalations for one merchant inside an hour and the agent stops, because a
+merchant that has started producing escalations is behaving differently from
+how it used to.
+
+That rule cannot be answered from any entity record — not the merchant, not the
+preference, not today's total. It exists only because the decisions themselves
+are queryable, which is why `record_decision` writes the merchant, the owner and
+the action into every entry. `test_deleting_the_journal_makes_the_rule_unreachable`
+is the proof: delete the entries and the same merchant, at the same address, for
+the same price, is paid without a word.
 
 ---
 

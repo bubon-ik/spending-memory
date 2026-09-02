@@ -5,7 +5,7 @@ are looking for the load-bearing memory calls, they are all in this file:
 
     read   MemoryClient.get_entity   -> merchant identity, payout address, prices
     read   MemoryClient.get_state    -> today's running total, survives restarts
-    read   MemoryClient.read_events  -> the decision journal, for "why did you buy that"
+    read   MemoryClient.read_events  -> the decision journal, read back to decide
     write  MemoryClient.set_entity   -> a merchant becomes known after settlement
     write  MemoryClient.set_state    -> the daily total after every payment
     write  MemoryClient.write_event  -> one journal line per decision
@@ -101,6 +101,14 @@ DORMANT_AFTER_DAYS = 90
 
 LIST_LIMIT = 1000
 """How many merchants one archive sweep looks at."""
+
+JOURNAL_READ_LIMIT = 200
+"""How far back a journal query looks.
+
+Sized for the window the rules ask about — an hour of one gateway's decisions —
+rather than for the whole history. A rule that had to page through everything
+ever decided would be a rule nobody could afford to run on every payment.
+"""
 
 CREDENTIALS_PATH = "~/.sibyl-memory/credentials.json"
 """Where `sibyl init` writes the activated account."""
@@ -350,6 +358,43 @@ class SpendingMemory:
     def journal(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """Recent decisions, newest first. Answers "why did you buy that"."""
         return self._client.read_events(limit=limit)
+
+    def recent_decisions(
+        self,
+        *,
+        merchant: str | None = None,
+        owner: str | None = None,
+        action: str | None = None,
+        within_seconds: int = 3600,
+        limit: int = JOURNAL_READ_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """Journal entries matching the filters, newest first.
+
+        This is the read that makes the COLD tier load-bearing rather than an
+        archive. Some things are only visible in the sequence of decisions —
+        a merchant that has started producing escalations is behaving
+        differently from how it used to, and no entity record holds that.
+
+        Filters on the `extra` payload written by `record_decision`, which puts
+        `merchant`, `owner` and `action` there for exactly this purpose.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+        matching: list[dict[str, Any]] = []
+
+        for entry in self._client.read_events(limit=limit):
+            extra = entry.get("extra") or {}
+            if merchant is not None and extra.get("merchant") != merchant:
+                continue
+            if owner is not None and extra.get("owner") != owner:
+                continue
+            if action is not None and extra.get("action") != action:
+                continue
+            stamped = _parse_timestamp(entry.get("ts"))
+            if stamped is None or stamped < cutoff:
+                continue
+            matching.append(entry)
+
+        return matching
 
     def search(self, query: str) -> list[dict[str, Any]]:
         return list(self._client.search_entities(query, category=MERCHANT_CATEGORY))

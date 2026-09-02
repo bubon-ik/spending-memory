@@ -13,6 +13,7 @@ bad each case is:
     4. price unlike the usual price -> ESCALATE  (we know what it costs, and
                                                   how well we know it)
     5. over the daily cap           -> ESCALATE  (we know what today looks like)
+    6. it keeps being escalated     -> BLOCK     (the journal says something changed)
                                     -> PAY
 
 Rules 1, 1b, 2 and 4 read what the whole fleet has learned about the merchant.
@@ -22,6 +23,12 @@ out of allowance belong to a person rather than to a merchant.
 Rule 0 is not in `decide` at all: deciding is not spending, so the claim is
 taken by `authorise`, which is the call that means "and now I am going to do
 it". Everything else here answers a question and changes nothing.
+
+Rule 6 sits last on purpose. It is the weakest signal and the most likely to
+misfire, so anything with a concrete cause fires before it. It is also the only
+rule that cannot be answered from an entity record: a merchant that has started
+producing escalations is behaving differently from how it used to, and the
+evidence for that exists only in the journal.
 
 Rule 1b sits above the address check on purpose: an alert someone else already
 raised is the strongest thing we can know about a merchant. It is also the one
@@ -61,6 +68,14 @@ suspicious than one against a guess, not less.
 A merchant is never punished for being new; the agent is only ever cautious in
 proportion to how much it actually knows.
 """
+
+
+ESCALATION_LIMIT = 3
+"""How many escalations for one merchant, inside the window, is too many."""
+
+ESCALATION_WINDOW_SECONDS = 3600
+"""How far back rule 6 counts. An hour: long enough for a pattern, short
+enough that yesterday's resolved trouble is not still blocking today."""
 
 
 def _how_long_ago(timestamp: str | None) -> str:
@@ -104,12 +119,16 @@ class SpendingPolicy:
         daily_cap_usd: Decimal,
         price_spike_factor: Decimal | None = None,
         claim_ttl_seconds: int = CLAIM_TTL_SECONDS,
+        escalation_limit: int = ESCALATION_LIMIT,
+        escalation_window_seconds: int = ESCALATION_WINDOW_SECONDS,
     ) -> None:
         if daily_cap_usd <= 0:
             raise ValueError("daily_cap_usd must be positive")
         self.memory = memory
         self.daily_cap_usd = daily_cap_usd
         self.claim_ttl_seconds = claim_ttl_seconds
+        self.escalation_limit = escalation_limit
+        self.escalation_window_seconds = escalation_window_seconds
         self.price_spike_factor = price_spike_factor
         """One band for every merchant, or None to choose it by their status."""
 
@@ -132,6 +151,13 @@ class SpendingPolicy:
         alert = self.memory.open_alert(payment.merchant)
         spent = self.memory.spent_today(payment.owner)
         decision = self._evaluate(payment, known, preference, alert, spent)
+
+        if decision.action is Action.PAY:
+            # Read last, because it is the only rule that costs a journal scan
+            # and the only one that can be wrong about a merchant that is
+            # otherwise fine. Everything with a concrete cause has already had
+            # its say by here.
+            decision = self._journal_rule(payment, known) or decision
 
         if decision.rule == "payout_address_changed" and known is not None:
             # Raised here rather than inside `_evaluate` so the rules stay a
@@ -173,6 +199,45 @@ class SpendingPolicy:
                 decision, journal_id=self.memory.record_decision(payment, decision)
             ),
             claim_id,
+        )
+
+    def _journal_rule(
+        self, payment: Payment, known: MerchantMemory | None
+    ) -> Decision | None:
+        """Rule 6, and the reason the journal is written at all.
+
+        Counted across owners, because how often a merchant is escalated is a
+        fact about the merchant rather than about any one person's caution.
+        """
+        escalations = self.memory.recent_decisions(
+            merchant=payment.merchant,
+            action=Action.ESCALATE.value,
+            within_seconds=self.escalation_window_seconds,
+        )
+        if len(escalations) < self.escalation_limit:
+            return None
+
+        window_hours = self.escalation_window_seconds // 3600
+        window = "hour" if window_hours == 1 else f"{window_hours} hours"
+        return Decision(
+            action=Action.BLOCK,
+            rule="repeated_escalations",
+            reason=(
+                f"{payment.merchant} has been asked about {len(escalations)} "
+                f"times in the last {window} and something is off. "
+                "Stopping until you look at it."
+            ),
+            evidence={
+                "merchant_status": known.status if known else "new",
+                "escalations": len(escalations),
+                "escalation_window_seconds": self.escalation_window_seconds,
+                "escalation_rules": sorted(
+                    {
+                        str((e.get("extra") or {}).get("rule"))
+                        for e in escalations
+                    }
+                ),
+            },
         )
 
     def _already_in_flight(self, payment: Payment) -> Decision:
