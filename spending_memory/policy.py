@@ -6,15 +6,21 @@ in order, and the first one that fires wins, because the ordering encodes how
 bad each case is:
 
     1. never paid this merchant     -> ESCALATE  (we know nothing)
+    1b. an alert is open on them    -> BLOCK     (someone already saw this)
     2. payout address changed       -> BLOCK     (we know something is wrong)
     3. owner rejected them before   -> ESCALATE  (we were told no)
     4. price unlike the usual price -> ESCALATE  (we know what it costs)
     5. over the daily cap           -> ESCALATE  (we know what today looks like)
                                     -> PAY
 
-Rules 1, 2 and 4 read what the whole fleet has learned about the merchant.
+Rules 1, 1b, 2 and 4 read what the whole fleet has learned about the merchant.
 Rules 3 and 5 read one owner's own record, because being told no and running
 out of allowance belong to a person rather than to a merchant.
+
+Rule 1b sits above the address check on purpose: an alert someone else already
+raised is the strongest thing we can know about a merchant. It is also the one
+rule that reads a conclusion rather than a fact — another agent, acting for
+another owner, was asked this same question and refused.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .store import SpendingMemory
@@ -29,6 +36,32 @@ from .types import Action, Decision, MerchantMemory, Payment
 
 PRICE_SPIKE_FACTOR = Decimal("3")
 """How far above the remembered median price is still allowed through silently."""
+
+
+def _how_long_ago(timestamp: str | None) -> str:
+    """Plain English for a moment in the past, for a sentence a human reads.
+
+    Deliberately coarse. The owner needs to know whether this happened minutes
+    or days ago; a millisecond-accurate delta in an approval message is noise.
+    """
+    if not timestamp:
+        return "earlier"
+    try:
+        raised = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return "earlier"
+    if raised.tzinfo is None:
+        raised = raised.replace(tzinfo=timezone.utc)
+    seconds = (datetime.now(timezone.utc) - raised).total_seconds()
+    if seconds < 120:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} minutes ago"
+    if seconds < 86400:
+        hours = int(seconds // 3600)
+        return "an hour ago" if hours == 1 else f"{hours} hours ago"
+    days = int(seconds // 86400)
+    return "yesterday" if days == 1 else f"{days} days ago"
 
 
 class SpendingPolicy:
@@ -55,8 +88,21 @@ class SpendingPolicy:
     def decide(self, payment: Payment, *, record: bool = True) -> Decision:
         known = self.memory.recall_merchant(payment.merchant)
         preference = self.memory.recall_preference(payment.owner, payment.merchant)
+        alert = self.memory.open_alert(payment.merchant)
         spent = self.memory.spent_today(payment.owner)
-        decision = self._evaluate(payment, known, preference, spent)
+        decision = self._evaluate(payment, known, preference, alert, spent)
+
+        if decision.rule == "payout_address_changed" and known is not None:
+            # Raised here rather than inside `_evaluate` so the rules stay a
+            # pure reading of memory, and raised whatever `record` says: a
+            # journal line is a log, but this is a warning to everyone else.
+            self.memory.raise_alert(
+                payment.merchant,
+                previous_pay_to=known.pay_to,
+                requested_pay_to=payment.pay_to_normalised,
+                raised_by=payment.owner,
+            )
+
         if record:
             decision = replace(
                 decision, journal_id=self.memory.record_decision(payment, decision)
@@ -70,6 +116,7 @@ class SpendingPolicy:
         payment: Payment,
         known: MerchantMemory | None,
         preference: dict[str, Any],
+        alert: dict[str, Any] | None,
         spent_today: Decimal,
     ) -> Decision:
         if known is None or known.payment_count == 0:
@@ -81,6 +128,26 @@ class SpendingPolicy:
                     "Confirm this one and I will handle the next."
                 ),
                 evidence={"merchant": payment.merchant},
+            )
+
+        if alert is not None:
+            # Whose refusal it was is not in the sentence and not in the
+            # evidence. The owner needs to know the merchant is disputed, not
+            # who else is a customer of theirs.
+            return Decision(
+                action=Action.BLOCK,
+                rule="merchant_alert",
+                reason=(
+                    f"Another agent was asked to pay {payment.merchant} at a "
+                    f"different address {_how_long_ago(alert.get('raised_at'))} "
+                    "and refused. Until someone resolves that I am not paying "
+                    "them either."
+                ),
+                evidence={
+                    "alert_raised_at": alert.get("raised_at"),
+                    "alert_previous_pay_to": alert.get("previous_pay_to"),
+                    "alert_requested_pay_to": alert.get("requested_pay_to"),
+                },
             )
 
         if known.pay_to != payment.pay_to_normalised:

@@ -14,6 +14,7 @@ One process serves several owners out of one database, so the records are split
 by who they belong to:
 
     merchant       shared     what the merchant is: payout address, prices, count
+    merchant_alert shared     an unresolved warning: this merchant's address moved
     merchant_pref  per owner  what one owner decided about them, and their own count
     spend:<owner>  per owner  what that owner has spent today
 
@@ -50,6 +51,14 @@ together rather than one owner at a time.
 
 PREFERENCE_CATEGORY = "merchant_pref"
 """Sibyl WARM tier: `<owner>:<merchant>`, one owner's standing opinion."""
+
+ALERT_CATEGORY = "merchant_alert"
+"""Sibyl WARM tier: one open warning per merchant, shared by every owner.
+
+Raised when someone is asked to pay a merchant at an address that is not the
+one on file. It is shared because the danger is: the second owner to be asked
+the same question should not have to work it out from scratch.
+"""
 
 SPEND_STATE_PREFIX = "spend"
 """Sibyl HOT tier: `spend:<owner>:<utc-date>`, rewritten in place all day."""
@@ -164,6 +173,72 @@ class SpendingMemory:
             "reason": body.get("rejected_reason"),
             "own_count": int(body.get("own_count", 0)),
         }
+
+    def open_alert(self, merchant: str) -> dict[str, Any] | None:
+        """An unresolved warning about this merchant, or None.
+
+        A cleared alert reads the same as no alert. The record stays for the
+        journal rather than being deleted, because "this was raised and then
+        resolved by a person" is a different history from "this never happened".
+        """
+        try:
+            record = self._client.get_entity(ALERT_CATEGORY, merchant)
+        except NotFoundError:
+            return None
+        body = record.get("body") or {}
+        if body.get("cleared"):
+            return None
+        return dict(body)
+
+    def raise_alert(
+        self,
+        merchant: str,
+        *,
+        previous_pay_to: str,
+        requested_pay_to: str,
+        raised_by: str,
+    ) -> None:
+        """Warn every owner that this merchant asked to be paid somewhere new.
+
+        Overwrites whatever was there, including a previously cleared alert: if
+        the same bad address comes back after a human resolved it, that is news
+        again, not history.
+        """
+        self._client.set_entity(
+            ALERT_CATEGORY,
+            merchant,
+            {
+                "previous_pay_to": previous_pay_to,
+                "requested_pay_to": requested_pay_to,
+                "raised_by": raised_by,
+                "raised_at": _now(),
+                "cleared": False,
+            },
+        )
+        self._client.write_event(
+            acted=[
+                f"raised an alert on {merchant}: asked to be paid at "
+                f"{requested_pay_to} instead of {previous_pay_to}"
+            ],
+            extra={"merchant": merchant, "alert": "payout_address_changed"},
+        )
+
+    def clear_alert(self, merchant: str, *, cleared_by: str) -> None:
+        """Resolve an alert. Deliberate, manual, and never on a timer.
+
+        An alert that expires by itself protects nobody: the merchant has only
+        to wait. Someone has to look at the address and say it is fine.
+        """
+        try:
+            body = dict(self._client.get_entity(ALERT_CATEGORY, merchant).get("body") or {})
+        except NotFoundError:
+            return
+        body.update({"cleared": True, "cleared_by": cleared_by, "cleared_at": _now()})
+        self._client.set_entity(ALERT_CATEGORY, merchant, body)
+        self._client.write_event(
+            acted=[f"cleared the alert on {merchant}"],
+            extra={"merchant": merchant, "alert": "cleared", "cleared_by": cleared_by},
+        )
 
     def spent_today(
         self, owner: str = DEFAULT_OWNER, *, day: str | None = None

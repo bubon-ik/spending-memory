@@ -130,3 +130,75 @@ def test_two_owners_have_separate_daily_budgets(memory: SpendingMemory) -> None:
 def test_a_third_owner_starts_the_day_at_zero(memory: SpendingMemory) -> None:
     settle(memory, ALICE, times=3, amount="20")
     assert memory.spent_today("telegram:3003") == Decimal("0")
+
+
+# ------------------------------------------------- a warning travels
+
+
+ATTACKER_ADDRESS = "0x2b9e77d4c1a03f568e2b41d7c90fa3e5182bd0a7"
+
+
+def test_one_agents_refusal_warns_every_other_agent(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """Alice's agent refuses a moved address. Bob's agent inherits the doubt.
+
+    Bob is asked to pay the address that *is* on file, so nothing about his own
+    payment looks wrong. The only reason to stop is that somebody else already
+    saw this merchant ask for money somewhere else.
+    """
+    settle(memory, ALICE, times=3)
+
+    blocked = policy.decide(payment(ALICE, pay_to=ATTACKER_ADDRESS))
+    assert blocked.rule == "payout_address_changed"
+
+    for_bob = policy.decide(payment(BOB))
+    assert for_bob.action is Action.BLOCK
+    assert for_bob.rule == "merchant_alert"
+    assert for_bob.evidence["alert_requested_pay_to"] == ATTACKER_ADDRESS
+
+
+def test_the_warning_does_not_say_who_raised_it(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """Bob learns that a merchant is disputed, not who else shops there."""
+    settle(memory, ALICE, times=3)
+    policy.decide(payment(ALICE, pay_to=ATTACKER_ADDRESS))
+
+    for_bob = policy.decide(payment(BOB))
+    assert ALICE not in for_bob.reason
+    assert ALICE not in str(for_bob.evidence)
+    assert "Another agent" in for_bob.reason
+
+
+def test_the_alert_outranks_everything_below_it(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """An open alert is the strongest thing we can know about a merchant."""
+    settle(memory, ALICE, times=3)
+    policy.decide(payment(ALICE, pay_to=ATTACKER_ADDRESS))
+    memory.remember_rejection(payment(BOB), reason="unrelated opinion")
+
+    assert policy.decide(payment(BOB)).rule == "merchant_alert"
+
+
+def test_clearing_the_alert_lets_the_fleet_pay_again(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """Deliberate and manual: a person looked at the address and said it is fine."""
+    settle(memory, ALICE, times=3)
+    policy.decide(payment(ALICE, pay_to=ATTACKER_ADDRESS))
+    assert policy.decide(payment(BOB)).action is Action.BLOCK
+
+    memory.clear_alert(MERCHANT, cleared_by="operator")
+
+    assert memory.open_alert(MERCHANT) is None
+    assert policy.decide(payment(BOB)).action is Action.PAY
+
+
+def test_an_unknown_merchant_is_still_asked_about_first(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """No alert can exist before somebody has an address to compare against."""
+    assert policy.decide(payment(ALICE)).rule == "unknown_merchant"
+    assert memory.open_alert(MERCHANT) is None
