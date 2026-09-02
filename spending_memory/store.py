@@ -66,6 +66,23 @@ SPEND_STATE_PREFIX = "spend"
 PRICE_HISTORY_LIMIT = 20
 """How many past prices to keep per merchant. Enough for a stable median."""
 
+MERCHANT_STATUS_THRESHOLDS = ((10, "trusted"), (3, "established"), (0, "new"))
+"""Settled payments needed for each status, strongest first.
+
+Written to Sibyl's own `status` field on the entity, so the record carries the
+agent's opinion of the merchant and not just the raw counter. A status is
+cheap to read, survives a restart with everything else, and is what the price
+band is chosen from.
+"""
+
+
+def merchant_status(payment_count: int) -> str:
+    """`new` at 1-2 payments, `established` at 3-9, `trusted` at 10 and up."""
+    for threshold, status in MERCHANT_STATUS_THRESHOLDS:
+        if payment_count >= threshold:
+            return status
+    return "new"
+
 CREDENTIALS_PATH = "~/.sibyl-memory/credentials.json"
 """Where `sibyl init` writes the activated account."""
 
@@ -146,11 +163,16 @@ class SpendingMemory:
         except NotFoundError:
             return None
         body = record.get("body") or {}
+        payment_count = int(body.get("payment_count", 0))
         return MerchantMemory(
             merchant=merchant,
             pay_to=str(body.get("pay_to", "")).strip().lower(),
-            payment_count=int(body.get("payment_count", 0)),
+            payment_count=payment_count,
             prices_usd=_decimals(body.get("prices_usd")),
+            # Recomputed when the record predates the status field, so an
+            # existing database promotes itself on the next read instead of
+            # treating twenty payments as a stranger.
+            status=str(record.get("status") or merchant_status(payment_count)),
             last_settled_at=body.get("last_settled_at"),
         )
 
@@ -283,14 +305,20 @@ class SpendingMemory:
         prices.append(payment.amount_usd)
         prices = prices[-PRICE_HISTORY_LIMIT:]
 
+        payment_count = (known.payment_count if known else 0) + 1
         body = {
             "pay_to": payment.pay_to_normalised,
-            "payment_count": (known.payment_count if known else 0) + 1,
+            "payment_count": payment_count,
             "prices_usd": [str(p) for p in prices],
             "last_resource": payment.resource,
             "last_settled_at": _now(),
         }
-        self._client.set_entity(MERCHANT_CATEGORY, payment.merchant, body)
+        self._client.set_entity(
+            MERCHANT_CATEGORY,
+            payment.merchant,
+            body,
+            status=merchant_status(payment_count),
+        )
 
         # Settling is this owner saying yes, so it also retires whatever they
         # said no to before. Their count is kept apart from the fleet's: it is

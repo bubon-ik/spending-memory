@@ -9,7 +9,8 @@ bad each case is:
     1b. an alert is open on them    -> BLOCK     (someone already saw this)
     2. payout address changed       -> BLOCK     (we know something is wrong)
     3. owner rejected them before   -> ESCALATE  (we were told no)
-    4. price unlike the usual price -> ESCALATE  (we know what it costs)
+    4. price unlike the usual price -> ESCALATE  (we know what it costs, and
+                                                  how well we know it)
     5. over the daily cap           -> ESCALATE  (we know what today looks like)
                                     -> PAY
 
@@ -35,7 +36,26 @@ from .store import SpendingMemory
 from .types import Action, Decision, MerchantMemory, Payment
 
 PRICE_SPIKE_FACTOR = Decimal("3")
-"""How far above the remembered median price is still allowed through silently."""
+"""How far above the median a price may sit before it is worth asking about.
+
+This is the `new` band, and it stays the default for a policy that pins one
+factor explicitly.
+"""
+
+PRICE_SPIKE_FACTORS = {
+    "new": PRICE_SPIKE_FACTOR,
+    "established": Decimal("2"),
+    "trusted": Decimal("1.5"),
+}
+"""The band **tightens** as evidence accumulates, which is backwards from what
+most people expect, so: with two payments the median is barely a number and the
+slack is there to absorb how little we know. With twenty, the price is
+genuinely known — and a spike against a well-measured baseline is more
+suspicious than one against a guess, not less.
+
+A merchant is never punished for being new; the agent is only ever cautious in
+proportion to how much it actually knows.
+"""
 
 
 def _how_long_ago(timestamp: str | None) -> str:
@@ -77,13 +97,19 @@ class SpendingPolicy:
         memory: SpendingMemory,
         *,
         daily_cap_usd: Decimal,
-        price_spike_factor: Decimal = PRICE_SPIKE_FACTOR,
+        price_spike_factor: Decimal | None = None,
     ) -> None:
         if daily_cap_usd <= 0:
             raise ValueError("daily_cap_usd must be positive")
         self.memory = memory
         self.daily_cap_usd = daily_cap_usd
         self.price_spike_factor = price_spike_factor
+        """One band for every merchant, or None to choose it by their status."""
+
+    def _price_spike_factor(self, status: str) -> Decimal:
+        if self.price_spike_factor is not None:
+            return self.price_spike_factor
+        return PRICE_SPIKE_FACTORS.get(status, PRICE_SPIKE_FACTOR)
 
     def decide(self, payment: Payment, *, record: bool = True) -> Decision:
         known = self.memory.recall_merchant(payment.merchant)
@@ -144,6 +170,7 @@ class SpendingPolicy:
                     "them either."
                 ),
                 evidence={
+                    "merchant_status": known.status,
                     "alert_raised_at": alert.get("raised_at"),
                     "alert_previous_pay_to": alert.get("previous_pay_to"),
                     "alert_requested_pay_to": alert.get("requested_pay_to"),
@@ -161,6 +188,7 @@ class SpendingPolicy:
                     "I am not sending this without you."
                 ),
                 evidence={
+                    "merchant_status": known.status,
                     "remembered_pay_to": known.pay_to,
                     "requested_pay_to": payment.pay_to_normalised,
                     "payment_count": known.payment_count,
@@ -176,24 +204,31 @@ class SpendingPolicy:
                     + (f": {preference['reason']}." if preference["reason"] else ".")
                     + " Asking again rather than assuming that changed."
                 ),
-                evidence={"rejected_reason": preference["reason"]},
+                evidence={
+                    "merchant_status": known.status,
+                    "rejected_reason": preference["reason"],
+                },
             )
 
         typical = known.typical_usd
-        ceiling = typical * self.price_spike_factor
+        factor = self._price_spike_factor(known.status)
+        ceiling = typical * factor
         if payment.amount_usd > ceiling:
             return Decision(
                 action=Action.ESCALATE,
                 rule="price_spike",
                 reason=(
                     f"{payment.merchant} normally costs about {typical} USD and "
-                    f"this quote is {payment.amount_usd}. That is more than "
-                    f"{self.price_spike_factor}x the usual, so I stopped."
+                    f"this quote is {payment.amount_usd}. After "
+                    f"{known.payment_count} payments I hold them to "
+                    f"{factor}x the usual, so I stopped."
                 ),
                 evidence={
+                    "merchant_status": known.status,
                     "typical_usd": str(typical),
                     "quoted_usd": str(payment.amount_usd),
                     "ceiling_usd": str(ceiling),
+                    "price_spike_factor": str(factor),
                 },
             )
 
@@ -208,6 +243,7 @@ class SpendingPolicy:
                     f"{remaining} left."
                 ),
                 evidence={
+                    "merchant_status": known.status,
                     "spent_today_usd": str(spent_today),
                     "remaining_usd": str(remaining),
                     "daily_cap_usd": str(self.daily_cap_usd),
@@ -224,6 +260,7 @@ class SpendingPolicy:
                 f"{remaining - payment.amount_usd} USD left today."
             ),
             evidence={
+                "merchant_status": known.status,
                 "payment_count": known.payment_count,
                 "pay_to": known.pay_to,
                 "typical_usd": str(typical),

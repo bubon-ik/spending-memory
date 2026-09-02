@@ -119,7 +119,12 @@ def test_price_spike_escalates(policy: SpendingPolicy, memory: SpendingMemory) -
 def test_price_at_the_ceiling_still_pays(
     policy: SpendingPolicy, memory: SpendingMemory
 ) -> None:
-    settle(memory, times=3, amount="10")
+    """Exactly at the ceiling is inside it, not outside.
+
+    Two settlements, because the ceiling now depends on how much evidence
+    there is: at `new` the band is 3x, so 10 USD of history allows 30.
+    """
+    settle(memory, times=2, amount="10")
     decision = policy.decide(payment(amount="30"))
     assert decision.action is Action.PAY
 

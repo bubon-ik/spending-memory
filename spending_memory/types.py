@@ -80,6 +80,12 @@ class MerchantMemory:
     pay_to: str
     payment_count: int
     prices_usd: tuple[Decimal, ...]
+    status: str = "new"
+    """How well established this merchant is, recomputed on every settlement.
+
+    Stored on the Sibyl record rather than derived at read time, so the record
+    itself says what the agent thinks of them and `sibyl memory list` shows it.
+    """
     last_settled_at: str | None = None
 
     @property
