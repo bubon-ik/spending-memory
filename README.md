@@ -22,11 +22,15 @@ It is the only module in the package that imports Sibyl, on purpose.
 | Sibyl call | Tier | What the agent cannot decide without it |
 |---|---|---|
 | `get_entity("merchant", …)` | WARM | Whether this merchant is known, and the address it was actually paid at |
-| `get_state("spend:<date>")` | HOT | How much of today's limit is already gone |
+| `get_entity("merchant_alert", …)` | WARM | Whether another agent already refused this merchant |
+| `get_entity("merchant_pref", …)` | WARM | Whether *this* owner said no to them before |
+| `get_state("spend:<owner>:<date>")` | HOT | How much of this owner's limit is already gone |
 | `read_events()` | COLD | Why a past purchase was made, when the owner asks |
-| `set_entity("merchant", …)` | WARM | — writes a merchant into existence after settlement |
-| `set_state("spend:<date>")` | HOT | — the running daily total, after every payment |
+| `set_entity("merchant", …, status=…)` | WARM | — writes a merchant into existence, and promotes it as it earns evidence |
+| `set_entity("merchant_alert", …)` | WARM | — warns every other agent that an address moved |
+| `set_state("spend:<owner>:<date>")` | HOT | — the running daily total, after every payment |
 | `write_event(…)` | COLD | — one journal line per decision |
+| `list_entities` / `archive_entity` | WARM | — puts dormant merchants away so they are asked about again |
 
 The decision itself is [`spending_memory/policy.py`](spending_memory/policy.py),
 about eighty lines. Every branch is decided by a value that came out of the table
@@ -98,7 +102,7 @@ memory = SpendingMemory.local()                       # ~/.sibyl-memory/memory.d
 policy = SpendingPolicy(memory, daily_cap_usd=Decimal("50"))
 
 payment = Payment("bitrefill-amazon-de", "0x8f3a…", Decimal("25"))
-decision = policy.decide(payment)
+decision = policy.decide(payment)                     # add owner="…" for many users
 
 if decision.needs_human:
     ask_the_owner(decision.reason)                    # iMessage, WhatsApp, hardware
@@ -118,18 +122,67 @@ They run in order, first match wins, and the ordering is the severity ordering.
 | # | When | Then | Because |
 |---|---|---|---|
 | 1 | Never paid this merchant | **ask** | We know nothing |
+| 1b | Another agent raised an alert on them | **refuse** | Someone already saw this |
 | 2 | Payout address differs from the remembered one | **refuse** | We know something is wrong |
-| 3 | Owner rejected them before | **ask** | We were told no, once |
-| 4 | Quote is over 3× the remembered median | **ask** | We know what it costs |
-| 5 | Over the daily cap | **ask** | We know what today looks like |
+| 3 | This owner rejected them before | **ask** | We were told no, once |
+| 4 | Quote is over the band for their status | **ask** | We know what it costs |
+| 5 | Over this owner's daily cap | **ask** | We know what today looks like |
 | — | Otherwise | **pay** | Everything matches memory |
 
 Prices use the **median** of the last twenty, not the mean: one mispriced
 purchase should not raise the baseline enough to wave the next one through.
 
+The band in rule 4 comes from how well the merchant is known, and it tightens
+as evidence accumulates — 3× when `new`, 2× when `established`, 1.5× when
+`trusted`. That is the opposite of the usual instinct, and it is the right way
+round: with two payments the median is barely a number and the slack absorbs
+how little is known; with twenty, the price is genuinely known, and a spike
+against a well-measured baseline is more suspicious than one against a guess.
+
 ---
 
-## Prior work
+## How memory made this possible
+
+Two things this layer does could not be done by a rule engine with a database
+behind it. Both of them are memory patterns, and both exist because they fix a
+real defect rather than to demonstrate a pattern.
+
+### The fleet learns together
+
+One process serves every user out of one memory, so the records are split by
+what they actually are. **What the merchant is** — the address they are paid
+at, how often they have been paid, what they charge — is shared by everybody.
+**What one owner decided** — a refusal, a budget, a day's spending — is theirs
+alone.
+
+That split is what makes independent agent runs cooperate. A payout address
+learned while serving one user protects every other user immediately, which is
+the right answer to stale x402 directories: the fleet notices a moved address
+faster than any catalog updates. And when one agent refuses a merchant that
+asked to be paid somewhere new, it writes a shared alert, so the next agent
+asked the same question starts from that refusal instead of working it out
+again — without ever learning who raised it.
+
+Run the opposite arrangement and the defect is obvious: with one shared record,
+one user saying "not this shop again" silences that shop for everybody.
+
+### The record changes with use
+
+A merchant is not a fixed row. Every settlement recomputes its status on the
+Sibyl record — `new`, then `established`, then `trusted` — and the price band
+is chosen from that status, tightening as evidence accumulates. The same quote
+that is waved through when a merchant is new is stopped once it is trusted,
+because by then the agent knows what they charge well enough for a spike to
+mean something.
+
+And a merchant nobody has paid in ninety days is archived, which makes it
+unknown again, so the next purchase asks. Storage that only grows would keep
+treating a year-old address as current. This one forgets on purpose, and
+recoverably — the record moves to ARCHIVE rather than being deleted.
+
+---
+
+## Prior Work
 
 Read this before judging originality.
 
@@ -139,7 +192,8 @@ iMessage and WhatsApp, and a working x402 client. It has delivered real orders t
 real people. None of that was built here, and none of it is claimed as new.
 
 **What is new in this repository** is the memory layer: `store.py`, `policy.py`,
-`types.py`, the tests, and the demo — the part that lets the agent decide for
+`types.py`, the coordination and dynamic-storage patterns above, the tests, and
+the demo — the part that lets the agent decide for
 itself whether a purchase needs a human. Before this, SingIt asked about every
 single payment. The commit history in this repository starts at the opening of
 the build window and is the honest record of what was written during it.
