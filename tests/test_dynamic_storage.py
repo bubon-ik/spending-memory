@@ -7,6 +7,7 @@ if it stops being used at all.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -131,3 +132,81 @@ def test_the_journal_entry_carries_the_status(
     decision = policy.decide(payment())
     entry = next(e for e in memory.journal(limit=10) if e["id"] == decision.journal_id)
     assert entry["extra"]["merchant_status"] == "established"
+
+
+# ------------------------------------------------- dormancy
+
+
+OTHER_MERCHANT = "api.example.com"
+
+
+def backdate(memory: SpendingMemory, merchant: str, days: int) -> None:
+    """Age a merchant's last settlement, the way the calendar would."""
+    record = memory._client.get_entity("merchant", merchant)
+    body = dict(record["body"])
+    body["last_settled_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).isoformat()
+    memory._client.set_entity("merchant", merchant, body, status=record["status"])
+
+
+def test_archiving_puts_away_the_dormant_and_leaves_the_active_alone(
+    memory: SpendingMemory,
+) -> None:
+    settle(memory, times=3)
+    memory.remember_settlement(
+        Payment(OTHER_MERCHANT, KNOWN_ADDRESS, Decimal("1")), tx_id="0xtest"
+    )
+    backdate(memory, MERCHANT, days=200)
+
+    assert memory.archive_dormant(older_than_days=90) == [MERCHANT]
+    assert memory.recall_merchant(OTHER_MERCHANT) is not None
+
+
+def test_a_merchant_just_inside_the_cutoff_survives(memory: SpendingMemory) -> None:
+    settle(memory, times=3)
+    backdate(memory, MERCHANT, days=89)
+    assert memory.archive_dormant(older_than_days=90) == []
+
+
+def test_an_archived_merchant_is_unknown_again_and_asks(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """The point of archiving rather than deleting, and of asking rather than paying.
+
+    A shop last paid a year ago is not a shop the agent knows. The address on
+    file has had a year to go stale, so the next purchase gets a human — and
+    the record it used to have is in ARCHIVE, not gone.
+    """
+    settle(memory, times=10)
+    assert policy.decide(payment()).action is Action.PAY
+
+    backdate(memory, MERCHANT, days=400)
+    memory.archive_dormant()
+
+    assert memory.recall_merchant(MERCHANT) is None
+    assert policy.decide(payment()).rule == "unknown_merchant"
+
+
+def test_settling_again_brings_the_merchant_back(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    settle(memory, times=10)
+    backdate(memory, MERCHANT, days=400)
+    memory.archive_dormant()
+
+    settle(memory, times=1)
+    known = memory.recall_merchant(MERCHANT)
+    assert known is not None
+    assert known.status == "new"  # it starts earning its way back
+
+
+def test_the_sweep_is_never_run_from_the_decision_path(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """`decide` must not quietly rewrite storage, or no decision is reproducible."""
+    settle(memory, times=3)
+    backdate(memory, MERCHANT, days=400)
+
+    assert policy.decide(payment()).action is Action.PAY
+    assert memory.recall_merchant(MERCHANT) is not None

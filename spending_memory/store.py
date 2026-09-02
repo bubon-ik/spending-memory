@@ -33,7 +33,7 @@ here means spending someone else's money.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,12 @@ def merchant_status(payment_count: int) -> str:
             return status
     return "new"
 
+DORMANT_AFTER_DAYS = 90
+"""How long a merchant may go unpaid before its record is put away."""
+
+LIST_LIMIT = 1000
+"""How many merchants one archive sweep looks at."""
+
 CREDENTIALS_PATH = "~/.sibyl-memory/credentials.json"
 """Where `sibyl init` writes the activated account."""
 
@@ -123,6 +129,17 @@ def _decimals(values: Any) -> tuple[Decimal, ...]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Read a timestamp this module wrote, treating anything unreadable as absent."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class SpendingMemory:
@@ -380,6 +397,43 @@ class SpendingMemory:
                 "rejected": True,
             },
         )
+
+    def archive_dormant(self, *, older_than_days: int = DORMANT_AFTER_DAYS) -> list[str]:
+        """Put away merchants nobody has paid in a long time. Returns their names.
+
+        `recall_merchant` then returns None for them, so the next payment is
+        treated as a first payment and asks. That is intended: a shop you last
+        used a year ago deserves a fresh look, and the address on file has had a
+        year to go stale. Archiving is not deleting — the record moves to
+        ARCHIVE and everything it knew is recoverable.
+
+        Never called from the decision path, and deliberately not on a timer
+        inside it. A `decide()` that quietly rewrote storage would be a decision
+        nobody could reproduce afterwards; the host calls this when it wants a
+        sweep, and the journal says when it happened.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        archived: list[str] = []
+
+        for record in self._client.list_entities(MERCHANT_CATEGORY, limit=LIST_LIMIT):
+            name = str(record.get("name") or "")
+            body = record.get("body") or {}
+            last_settled = _parse_timestamp(body.get("last_settled_at"))
+            # No timestamp means nothing has ever settled against this record,
+            # so there is no dormancy to measure and nothing to put away.
+            if name and last_settled is not None and last_settled < cutoff:
+                self._client.archive_entity(MERCHANT_CATEGORY, name, reason="dormant")
+                archived.append(name)
+
+        if archived:
+            self._client.write_event(
+                acted=[
+                    f"archived {len(archived)} merchants unpaid for "
+                    f"{older_than_days} days: {', '.join(sorted(archived))}"
+                ],
+                extra={"archived": sorted(archived), "older_than_days": older_than_days},
+            )
+        return archived
 
     def record_decision(self, payment: Payment, decision: Decision) -> str:
         """One journal line per decision, whatever the outcome.
