@@ -15,6 +15,7 @@ bad each case is:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 from .store import SpendingMemory
@@ -50,7 +51,9 @@ class SpendingPolicy:
         spent = self.memory.spent_today()
         decision = self._evaluate(payment, known, spent)
         if record:
-            self.memory.record_decision(payment, decision)
+            decision = replace(
+                decision, journal_id=self.memory.record_decision(payment, decision)
+            )
         return decision
 
     # ------------------------------------------------------------------ rules

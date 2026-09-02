@@ -163,9 +163,13 @@ class SpendingMemory:
             extra={"merchant": payment.merchant, "rejected": True},
         )
 
-    def record_decision(self, payment: Payment, decision: Decision) -> None:
-        """One journal line per decision, whatever the outcome."""
-        self._client.write_event(
+    def record_decision(self, payment: Payment, decision: Decision) -> str:
+        """One journal line per decision, whatever the outcome.
+
+        Returns the journal entry id so the caller can carry it into its own
+        ledger and keep the two records joinable.
+        """
+        return self._client.write_event(
             evaluated=[
                 f"{payment.merchant} {payment.amount_usd} USD -> {payment.pay_to_normalised}"
             ],

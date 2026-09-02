@@ -212,3 +212,32 @@ def test_the_same_process_without_memory_cannot_decide(tmp_path) -> None:
 
     with pytest.raises(ValueError):
         SpendingMemory(None)  # type: ignore[arg-type]
+
+
+# ------------------------------------------- the audit trail joins up
+
+
+def test_a_decision_points_at_its_journal_entry(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """The id the host application carries into its own ledger.
+
+    Without it a memory-approved purchase settles with an empty approval id,
+    and the one record that could explain it is unreachable from the other.
+    """
+    settle(memory, times=2)
+    decision = policy.decide(payment())
+
+    assert decision.journal_id
+    entry = next(
+        e for e in memory.journal(limit=10) if e["id"] == decision.journal_id
+    )
+    assert decision.reason in entry["acted"][0]
+    assert entry["extra"]["rule"] == decision.rule
+
+
+def test_not_recording_leaves_no_journal_id(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    settle(memory, times=2)
+    assert policy.decide(payment(), record=False).journal_id is None

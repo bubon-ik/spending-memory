@@ -88,6 +88,14 @@ class Decision:
     reason: str
     rule: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    journal_id: str | None = None
+    """Id of the COLD-tier journal entry that recorded this decision.
+
+    Carry it into whatever ledger the host application keeps, and a settled
+    payment points at the exact remembered facts that authorised it. A purchase
+    approved by memory is then more auditable than one approved by a person
+    tapping yes, not less.
+    """
 
     @property
     def needs_human(self) -> bool:
