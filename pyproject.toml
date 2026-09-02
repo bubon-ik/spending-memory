@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spending-memory"
+version = "0.1.0"
+description = "An agent decides whether a payment needs its owner, from what it remembers paying before."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["sibyl-memory-client>=0.8.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["spending_memory*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

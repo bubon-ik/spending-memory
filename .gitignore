@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# local memory and demo state — never commit a memory database
+*.db
+*.sqlite3
+demo-memory.db
+.env
+*.env
+!*.env.example
