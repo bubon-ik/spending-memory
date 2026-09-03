@@ -98,6 +98,10 @@ def to_payment(
     )
 
 
+AUTONOMY_CAP_ENV = "SPENDING_MEMORY_AUTONOMY_CAP"
+DB_PATH_ENV = "SPENDING_MEMORY_DB"
+
+
 def build_policy(
     *,
     db_path: str | None = None,
@@ -110,9 +114,31 @@ def build_policy(
     Environment:
       SPENDING_MEMORY_DB              path to the Sibyl database
       SPENDING_MEMORY_AUTONOMY_CAP    what may be spent per UTC day without asking
+
+    There is no default for the cap, deliberately. A library that invents a
+    spending limit invents it wrong: the number depends on whose money it is
+    and what the product does, and a deployment that forgot to set it would
+    discover the guess only from the bank statement. Refusing to start is the
+    loud failure; a plausible default is the quiet one.
     """
     memory = SpendingMemory.local(
-        db_path or os.getenv("SPENDING_MEMORY_DB", "~/.sibyl-memory/memory.db")
+        db_path or os.getenv(DB_PATH_ENV, "~/.sibyl-memory/memory.db")
     )
-    cap = daily_cap_usd or Decimal(os.getenv("SPENDING_MEMORY_AUTONOMY_CAP", "5"))
-    return SpendingPolicy(memory, daily_cap_usd=cap)
+
+    if daily_cap_usd is None:
+        raw = os.getenv(AUTONOMY_CAP_ENV, "").strip()
+        if not raw:
+            raise ValueError(
+                f"{AUTONOMY_CAP_ENV} is not set. This is the amount the agent "
+                "may spend per UTC day without asking its owner, so there is no "
+                "safe default to fall back on. Set it in the environment the "
+                "service actually reads."
+            )
+        try:
+            daily_cap_usd = Decimal(raw)
+        except (ArithmeticError, ValueError):
+            raise ValueError(
+                f"{AUTONOMY_CAP_ENV} must be a decimal amount in USD, got {raw!r}"
+            ) from None
+
+    return SpendingPolicy(memory, daily_cap_usd=daily_cap_usd)

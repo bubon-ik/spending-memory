@@ -117,3 +117,39 @@ def test_the_error_names_both_spellings(missing: str) -> None:
     del body[missing]
     with pytest.raises(ValueError, match="or "):
         to_payment(body, RESOURCE)
+
+
+# --------------------------- the cap has no default, on purpose
+
+
+def test_an_unset_cap_refuses_to_start(tmp_path, monkeypatch) -> None:
+    """A library must not invent someone's spending limit.
+
+    The failure it replaces is the quiet one: a deployment that forgot the
+    variable would have run at whatever the library guessed, and found out
+    from the ledger.
+    """
+    monkeypatch.setenv("SPENDING_MEMORY_DB", str(tmp_path / "cap.db"))
+    monkeypatch.delenv("SPENDING_MEMORY_AUTONOMY_CAP", raising=False)
+    with pytest.raises(ValueError, match="SPENDING_MEMORY_AUTONOMY_CAP"):
+        build_policy()
+
+
+def test_a_blank_cap_is_treated_as_unset(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SPENDING_MEMORY_DB", str(tmp_path / "cap.db"))
+    monkeypatch.setenv("SPENDING_MEMORY_AUTONOMY_CAP", "   ")
+    with pytest.raises(ValueError, match="SPENDING_MEMORY_AUTONOMY_CAP"):
+        build_policy()
+
+
+def test_a_nonsense_cap_says_so(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SPENDING_MEMORY_DB", str(tmp_path / "cap.db"))
+    monkeypatch.setenv("SPENDING_MEMORY_AUTONOMY_CAP", "half a dollar")
+    with pytest.raises(ValueError, match="decimal amount"):
+        build_policy()
+
+
+def test_an_explicit_cap_needs_no_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SPENDING_MEMORY_DB", str(tmp_path / "cap.db"))
+    monkeypatch.delenv("SPENDING_MEMORY_AUTONOMY_CAP", raising=False)
+    assert build_policy(daily_cap_usd=Decimal("0.50")).daily_cap_usd == Decimal("0.50")
