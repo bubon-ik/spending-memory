@@ -71,14 +71,27 @@ def to_payment(
     host with many can pass its user id and get separate budgets, separate
     rejections, and one shared view of the merchant.
     """
-    for field in ("payTo", "maxAmountRequired"):
-        if not payment_requirements.get(field):
-            raise ValueError(f"payment requirements are missing {field}")
+    # Two vocabularies are in the wild. The protocol says `payTo` and
+    # `maxAmountRequired`; hosts that normalise a 402 block before handing it
+    # on — SingIt's gateway among them — say `receiver` and `amountAtomic`.
+    # Accepting both is one line here and a debugging afternoon anywhere else.
+    pay_to = payment_requirements.get("payTo") or payment_requirements.get("receiver")
+    amount = (
+        payment_requirements.get("maxAmountRequired")
+        if payment_requirements.get("maxAmountRequired") is not None
+        else payment_requirements.get("amountAtomic")
+    )
+    if not pay_to:
+        raise ValueError("payment requirements are missing payTo (or receiver)")
+    if amount is None or str(amount) == "":
+        raise ValueError(
+            "payment requirements are missing maxAmountRequired (or amountAtomic)"
+        )
 
-    atomic = Decimal(str(payment_requirements["maxAmountRequired"]))
+    atomic = Decimal(str(amount))
     return Payment(
         merchant=merchant_key(resource_url),
-        pay_to=str(payment_requirements["payTo"]),
+        pay_to=str(pay_to),
         amount_usd=atomic / (Decimal(10) ** decimals),
         owner=owner,
         resource=resource_url,

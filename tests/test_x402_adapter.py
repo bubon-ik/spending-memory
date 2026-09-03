@@ -78,3 +78,42 @@ def test_build_policy_reads_the_environment(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SPENDING_MEMORY_AUTONOMY_CAP", "1.25")
     policy = build_policy()
     assert policy.daily_cap_usd == Decimal("1.25")
+
+
+# ------------------------------- the other vocabulary hosts actually use
+
+
+def test_normalised_requirements_are_accepted_too() -> None:
+    """`receiver` / `amountAtomic`, as a gateway hands them on.
+
+    SingIt normalises every 402 block into these names before the decision
+    ever sees it. Reading only the protocol spelling raised on every single
+    purchase, and the error blamed the merchant for a mismatch that was ours.
+    """
+    payment = to_payment(
+        {
+            "network": "base-mainnet",
+            "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "amountAtomic": "3000",
+            "receiver": REAL,
+        },
+        RESOURCE,
+    )
+    assert payment.amount_usd == Decimal("0.003")
+    assert payment.pay_to_normalised == REAL.lower()
+
+
+def test_the_protocol_spelling_still_wins_when_both_are_present() -> None:
+    payment = to_payment(
+        {**requirements(), "receiver": ATTACKER, "amountAtomic": "999"}, RESOURCE
+    )
+    assert payment.pay_to_normalised == REAL.lower()
+    assert payment.amount_usd == Decimal("0.003")
+
+
+@pytest.mark.parametrize("missing", ["payTo", "maxAmountRequired"])
+def test_the_error_names_both_spellings(missing: str) -> None:
+    body = requirements()
+    del body[missing]
+    with pytest.raises(ValueError, match="or "):
+        to_payment(body, RESOURCE)
