@@ -104,6 +104,16 @@ def _how_long_ago(timestamp: str | None) -> str:
     return "yesterday" if days == 1 else f"{days} days ago"
 
 
+def _payments(count: int) -> str:
+    """"payment" or "3 payments".
+
+    These strings are read aloud by the product and by a person deciding
+    whether to trust it. "the last 1 payments" is the sort of seam that makes
+    a careful system look careless.
+    """
+    return "payment" if count == 1 else f"{count} payments"
+
+
 class SpendingPolicy:
     """Decides whether a payment needs its owner.
 
@@ -313,7 +323,7 @@ class SpendingPolicy:
                 reason=(
                     f"{payment.merchant} is asking to be paid at "
                     f"{payment.pay_to_normalised}, but the last "
-                    f"{known.payment_count} payments went to {known.pay_to}. "
+                    f"{_payments(known.payment_count)} went to {known.pay_to}. "
                     "I am not sending this without you."
                 ),
                 evidence={
@@ -349,7 +359,7 @@ class SpendingPolicy:
                 reason=(
                     f"{payment.merchant} normally costs about {typical} USD and "
                     f"this quote is {payment.amount_usd}. After "
-                    f"{known.payment_count} payments I hold them to "
+                    f"{_payments(known.payment_count)} I hold them to "
                     f"{factor}x the usual, so I stopped."
                 ),
                 evidence={

@@ -284,3 +284,31 @@ def test_missing_credentials_fall_back_to_anonymous(tmp_path) -> None:
     from spending_memory.store import tenant_from_credentials
 
     assert tenant_from_credentials(str(tmp_path / "absent.json")) is None
+
+
+# --------------------------------- the sentences a person actually reads
+
+
+def test_one_past_payment_reads_as_english_in_the_block(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    """The single most-read line in the product. "the last 1 payments" is a seam."""
+    settle(memory, times=1)
+    reason = policy.decide(payment(pay_to=OTHER_ADDRESS)).reason
+    assert "the last payment went to" in reason
+    assert "1 payments" not in reason
+
+
+def test_several_past_payments_stay_plural_in_the_block(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    settle(memory, times=3)
+    assert "the last 3 payments went to" in policy.decide(payment(pay_to=OTHER_ADDRESS)).reason
+
+
+def test_the_price_rule_counts_in_english_too(
+    policy: SpendingPolicy, memory: SpendingMemory
+) -> None:
+    settle(memory, times=1, amount="10")
+    reason = policy.decide(payment(amount="90")).reason
+    assert "After payment I hold" in reason or "After 1 payments" not in reason
