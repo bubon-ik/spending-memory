@@ -81,6 +81,16 @@ a small mistake — it pays a stranger, on schedule, with your permission.
 A limit is a number. Deciding takes something to compare against, and that is
 what memory is for here.
 
+**The rule means two different things on the two paths it runs on, and the
+difference is worth stating plainly.** For a paid x402 API, the address in the
+402 block is the *merchant's* — so the rule catches the case above: a seller
+whose payout address is not the one they were paid at last time. For a gift
+card bought through SingIt, the address the user's funds actually move to is
+*our own settlement wallet*, not the shop's; there the same rule catches drift
+in our wallet rather than a merchant rotating, and if a deployment has no
+settlement wallet configured there is no counterparty to compare and the rule
+does not fire at all. One mechanism, two honestly different things caught.
+
 ---
 
 ## Install
