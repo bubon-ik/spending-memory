@@ -7,6 +7,7 @@ could have come from is the database on disk.
     python demo/cold_start.py seed      # three approved purchases, the slow way
     python demo/cold_start.py buy       # fresh process — pays, no human
     python demo/cold_start.py attack    # same merchant, new payout address
+    python demo/cold_start.py fleet     # one agent refuses, every agent inherits it
     python demo/cold_start.py forget    # delete the memory, watch it break
 
 Run them in that order, in one unbroken take, with the clock visible.
@@ -28,6 +29,8 @@ DB = os.environ.get("SPENDING_MEMORY_DB", "./demo-memory.db")
 CAP = Decimal(os.environ.get("SPENDING_MEMORY_CAP", "500"))
 
 MERCHANT = "bitrefill-amazon-de"
+ALICE = "telegram:1001"
+BOB = "telegram:2002"
 REAL_ADDRESS = "0x8f3a1c4e5b7d9028461fa0c3e5d7b91826af04c1"
 ATTACKER_ADDRESS = "0x2b9e77d4c1a03f568e2b41d7c90fa3e5182bd0a7"
 PRICE = Decimal("25")
@@ -50,8 +53,12 @@ def show(decision) -> None:
     print(f"  {decision.reason}\n")
 
 
-def quote(pay_to: str = REAL_ADDRESS, amount: Decimal = PRICE) -> Payment:
-    return Payment(MERCHANT, pay_to, amount, resource="amazon-de-25")
+def quote(
+    pay_to: str = REAL_ADDRESS,
+    amount: Decimal = PRICE,
+    owner: str = "default",
+) -> Payment:
+    return Payment(MERCHANT, pay_to, amount, owner=owner, resource="amazon-de-25")
 
 
 def cmd_seed() -> None:
@@ -87,6 +94,36 @@ def cmd_attack() -> None:
     show(policy.decide(quote(pay_to=ATTACKER_ADDRESS)))
 
 
+def cmd_fleet() -> None:
+    """Two owners, one memory. What one agent learns, every agent knows.
+
+    Bob is asked to pay the address that *is* on file, for the usual price, and
+    nothing about his own purchase looks wrong. He is stopped because somebody
+    else was asked the same question an hour ago and refused.
+    """
+    banner("FLEET — one agent refuses, every other agent inherits the doubt")
+    memory, policy = build()
+
+    print("\n  Alice has paid this merchant three times.")
+    for i in range(1, 4):
+        memory.remember_settlement(quote(owner=ALICE), tx_id=f"0xalice{i:04d}")
+
+    print("  Her agent is now asked to pay them somewhere new.\n")
+    print(f"  known:     {REAL_ADDRESS}")
+    print(f"  requested: {ATTACKER_ADDRESS}")
+    show(policy.decide(quote(pay_to=ATTACKER_ADDRESS, owner=ALICE)))
+
+    print("  Bob has never paid this merchant. His agent asks about a normal")
+    print(f"  purchase, at the address on file: {REAL_ADDRESS}\n")
+    show(policy.decide(quote(owner=BOB)))
+    print("  Nothing about Bob's payment is wrong. He is stopped because")
+    print("  somebody else already saw this — and he is not told who.\n")
+
+    memory.clear_alert(MERCHANT, cleared_by="operator")
+    print("  A person looks at the address and clears the alert.\n")
+    show(policy.decide(quote(owner=BOB)))
+
+
 def cmd_forget() -> None:
     """Remove the memory. This is the judges' own test, run for them."""
     banner("FORGET — delete the memory and try the same purchase")
@@ -100,7 +137,13 @@ def cmd_forget() -> None:
     print("  Everything this project claims came out of that file.\n")
 
 
-COMMANDS = {"seed": cmd_seed, "buy": cmd_buy, "attack": cmd_attack, "forget": cmd_forget}
+COMMANDS = {
+    "seed": cmd_seed,
+    "buy": cmd_buy,
+    "attack": cmd_attack,
+    "fleet": cmd_fleet,
+    "forget": cmd_forget,
+}
 
 
 def main() -> None:
