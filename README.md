@@ -112,6 +112,36 @@ does not fire at all. One mechanism, two honestly different things caught.
 
 ---
 
+## Partner stacks, and where each one does the work
+
+**Sibyl Memory** — every decision this package makes. It is the only dependency
+the engine has, and [`spending_memory/store.py`](spending_memory/store.py) is
+the only module that imports it: `get_entity` and `set_entity` for the merchant,
+the per-owner preference and the shared alert (WARM), `get_state` and `set_state`
+for the daily total and the in-flight payment claim (HOT), `write_event` and
+`read_events` for the journal that rule 6 reads back (COLD). The table at the
+top of this README lists each call and what cannot be decided without it. Delete
+the layer and the product does not degrade, it stops — `python demo/cold_start.py
+forget` runs that test for you.
+
+**Base** — where the money actually moves. Purchases settle in USDC on Base
+mainnet over x402, and the decision this package returns is what authorises the
+transfer or stops it. Two transactions from production, one minute apart, are
+the shortest proof that the memory is on the payment path rather than beside it:
+
+| Transaction | What decided it |
+|---|---|
+| [`0xafc64a…`](https://basescan.org/tx/0xafc64a25dad22f5249cf74554562071dbcb44d4c3a331af4af823fb8b77a0035) | a human, because the merchant was unknown |
+| [`0x24e945…`](https://basescan.org/tx/0x24e9454a35cdf3020bb0af80e8adc116d81eab2110bcaf0d40326fe9aa2bc0a7) | memory, with nobody asked |
+
+The x402 side of it is [`adapters/x402.py`](spending_memory/adapters/x402.py),
+which maps a `402 Payment Required` block — `payTo`, `maxAmountRequired`, Base
+USDC in atomic units — onto the payment that gets decided. The gateway lines
+that call it, and the wallet that signs, are quoted and linked in
+[`docs/INTEGRATION.md`](docs/INTEGRATION.md).
+
+No other partner stack is claimed. Nothing here touches Virtuals.
+
 ## Install
 
 ```bash
