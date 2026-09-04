@@ -12,6 +12,12 @@ Built for the Sibyl Labs hackathon, on [Sibyl Memory](https://docs.sibyllabs.org
 It runs in production behind [SingIt](https://singitai.app), a Telegram agent
 that buys real goods and paid APIs, settling in USDC on Base.
 
+Where it runs is checkable rather than assertable:
+[`docs/INTEGRATION.md`](docs/INTEGRATION.md) quotes the thirty lines that
+changed in the payment system and links each one at the commit it landed in —
+including a plain statement of which payment paths this covers and which it
+does not.
+
 ---
 
 ## Where the memory is load-bearing
