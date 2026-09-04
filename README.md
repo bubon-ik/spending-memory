@@ -18,6 +18,19 @@ changed in the payment system and links each one at the commit it landed in —
 including a plain statement of which payment paths this covers and which it
 does not.
 
+**It decides real payments today.** Memory was seeded from that agent's own
+history — 22 delivered gift-card orders, 301.33 USD, buyers in the Czech
+Republic, Germany and Argentina — which makes the merchant `trusted` with a
+median order of 2.43 USD. Then, on production, on Base mainnet: the first
+purchase from an x402 API nobody had paid before was escalated to a human and
+approved
+([`0xafc64a…`](https://basescan.org/tx/0xafc64a25dad22f5249cf74554562071dbcb44d4c3a331af4af823fb8b77a0035)),
+and the second identical one settled **with nobody asked**
+([`0x24e945…`](https://basescan.org/tx/0x24e9454a35cdf3020bb0af80e8adc116d81eab2110bcaf0d40326fe9aa2bc0a7)),
+because by then the agent remembered the merchant, the payout address and the
+price. Two transactions, one minute apart, and the only difference between them
+is what was in memory.
+
 ---
 
 ## Where the memory is load-bearing
