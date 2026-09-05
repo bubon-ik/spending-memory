@@ -1,9 +1,16 @@
-> **ETHOnline 2026 judges:** this package is **prior work** — it was built days
-> earlier for the Sibyl Labs hackathon. What was built for ETHOnline is the
-> Graph work on top of it, listed under
+> **Hackathon judges — this repository was worked on across two events, and
+> which one you are judging changes what counts as new:**
+>
+> - **Sibyl Labs** — the memory layer *is* the submission. Judge
+>   [**`v0.5.1`**](https://github.com/bubon-ik/spending-memory/tree/v0.5.1),
+>   the tag as it stood at the end of that build window. Nothing after it
+>   existed then.
+> - **ETHOnline 2026** — the memory layer is prior work; what was built for it
+>   is paying The Graph per query, on top. The rest of that project is in
+>   [`bubon-ik/SingItAI`](https://github.com/bubon-ik/SingItAI).
+>
+> Either way, the breakdown is under
 > [Prior work, and which event built what](#prior-work-and-which-event-built-what).
-> The rest of the project is in
-> [`bubon-ik/SingItAI`](https://github.com/bubon-ik/SingItAI).
 
 # Spending Memory
 
@@ -296,6 +303,11 @@ Read this before judging originality. This repository has now been worked on
 across two hackathons, and conflating them would flatter one of them.
 
 ### Built for ETHOnline 2026 — 5 September
+
+Everything in this subsection landed after
+[`v0.5.1`](https://github.com/bubon-ik/spending-memory/tree/v0.5.1), which is
+the tag the Sibyl Labs submission ends at and the commit the production gateway
+pins.
 
 Paying The Graph for subgraph queries. Everything else in this repository
 predates it.
