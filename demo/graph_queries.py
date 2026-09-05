@@ -12,9 +12,10 @@ rather than the answer, which is the whole point.
 
 Run them in that order, in one unbroken take, with the clock visible.
 
-`buy` and `again` do not settle on mainnet unless `--live-pay` is given and a
-payer is configured; without it the payment is decided for real and the fetch is
-simulated, and the transcript says so on every line. Nothing pretends.
+Without `--live-pay` the payment is decided for real and the fetch is simulated,
+and the transcript says so on every line. With `--live-pay` it settles on Base
+mainnet through `cdp-x402-service` — real USDC, $0.01 a query — and prints the
+transaction hash and its Basescan link. Nothing pretends in either mode.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import x402_payer  # noqa: E402
 from spending_memory import SpendingMemory, SpendingPolicy  # noqa: E402
 from spending_memory.adapters.thegraph import (  # noqa: E402
     PaidGraphQueries,
@@ -106,9 +109,16 @@ def run(
                 f"   [simulated fetch — decided for real, not settled on mainnet]"
             )
             return {"data": {"_meta": {"block": {"number": "simulated"}}}}, None
-        raise SystemExit(
-            "live payment needs an x402 payer; wire one in before --live-pay"
+        print(f"   {x402_payer.describe(payment)}")
+        answer, tx_id = x402_payer.pay_and_fetch(
+            payment,
+            requirements,
+            resource_url=RESOURCE,
+            query=query,
         )
+        print(f"   settled       : {tx_id}")
+        print(f"   basescan      : https://basescan.org/tx/{tx_id}")
+        return answer, tx_id
 
     return graph.query(
         resource_url=RESOURCE,
