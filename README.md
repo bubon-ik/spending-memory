@@ -1,3 +1,10 @@
+> **ETHOnline 2026 judges:** this package is **prior work** — it was built days
+> earlier for the Sibyl Labs hackathon. What was built for ETHOnline is the
+> Graph work on top of it, listed under
+> [Prior work, and which event built what](#prior-work-and-which-event-built-what).
+> The rest of the project is in
+> [`bubon-ik/SingItAI`](https://github.com/bubon-ik/SingItAI).
+
 # Spending Memory
 
 An agent that spends your money should remember what it already spent it on.
@@ -8,9 +15,10 @@ the agent remembers — who it paid, at which address, what things normally cost
 what you said no to, what today already looks like — and returns one of three
 answers: **pay**, **ask the owner**, or **refuse**.
 
-Built for the Sibyl Labs hackathon, on [Sibyl Memory](https://docs.sibyllabs.org).
-It runs in production behind [SingIt](https://singitai.app), a Telegram agent
-that buys real goods and paid APIs, settling in USDC on Base.
+Built for the Sibyl Labs hackathon, on [Sibyl Memory](https://docs.sibyllabs.org),
+and extended at ETHOnline 2026 to pay The Graph per subgraph query. It runs in
+production behind [SingIt](https://singitai.app), a Telegram agent that buys
+real goods and paid APIs, settling in USDC on Base.
 
 Where it runs is checkable rather than assertable:
 [`docs/INTEGRATION.md`](docs/INTEGRATION.md) quotes the thirty lines that
@@ -282,21 +290,38 @@ the same price, is paid without a word.
 
 ---
 
-## Prior Work
+## Prior work, and which event built what
 
-Read this before judging originality.
+Read this before judging originality. This repository has now been worked on
+across two hackathons, and conflating them would flatter one of them.
 
-**SingIt / Sign402 existed before this hackathon.** It is a live Telegram agent
-with managed CDP wallets on Base, Bitrefill fulfilment, out-of-band approval over
-iMessage and WhatsApp, and a working x402 client. It has delivered real orders to
-real people. None of that was built here, and none of it is claimed as new.
+### Built for ETHOnline 2026 — 5 September
 
-**What is new in this repository** is the memory layer: `store.py`, `policy.py`,
-`types.py`, the coordination and dynamic-storage patterns above, the tests, and
-the demo — the part that lets the agent decide for
-itself whether a purchase needs a human. Before this, SingIt asked about every
-single payment. The commit history in this repository starts at the opening of
-the build window and is the honest record of what was written during it.
+Paying The Graph for subgraph queries. Everything else in this repository
+predates it.
+
+| What | Where |
+| --- | --- |
+| The Graph adapter: reads their x402 402 — which arrives base64-encoded in a `payment-required` header with an empty body, nested under `accepts[]`, with the amount spelled `amount` — and turns a repeated query into a journal read instead of a second payment | [`thegraph.py`](https://github.com/bubon-ik/spending-memory/blob/cbc0739b2842e92f7d7c698580d48284a7063960/spending_memory/adapters/thegraph.py) |
+| A claim scope, because metered pricing broke the idempotency key: every query costs the same cent, so without it every distinct question was the same payment and the second query an agent ever made was refused forever | [`store.py`](https://github.com/bubon-ik/spending-memory/commit/6685c0266a9d7d85df0cd12db986695ac4516f38) |
+| A live demo against `gateway.thegraph.com`, and a payer that settles it for real | [`graph_queries.py`](https://github.com/bubon-ik/spending-memory/blob/179c15ff253483a2796b21c063152cdf35362dba/demo/graph_queries.py) · [`x402_payer.py`](https://github.com/bubon-ik/spending-memory/blob/e4a79d3eda55a4fa6043108fc909248516415b36/demo/x402_payer.py) |
+| `SKILL.md`: what an agent must **do** about each verdict — the part no schema can carry | [`SKILL.md`](https://github.com/bubon-ik/spending-memory/blob/cb0cdb3a791dbbba3e6d9ef1ad04c96d165c0633/skills/paying-for-data/SKILL.md) |
+
+A real query, really bought: $0.01 USDC settled on Base mainnet to the address
+the live 402 named, in
+[`0x57ddeebd…`](https://basescan.org/tx/0x57ddeebd74b89f8834c8627d7e1ad6878e44a651744da49fae677491ac2d7958).
+
+### Built for the Sibyl Labs hackathon — 3–4 September
+
+The memory layer itself: `store.py`, `policy.py`, `types.py`, the coordination
+and dynamic-storage patterns above, the tests and the cold-start demo — the part
+that lets the agent decide for itself whether a purchase needs a human. Before
+it, SingIt asked about every single payment.
+
+**Prior work to that in turn:** SingIt / Sign402, a live Telegram agent with
+managed CDP wallets on Base, Bitrefill fulfilment, out-of-band approval over
+iMessage and WhatsApp, and a working x402 client, delivering real orders to real
+people. None of it was built here and none of it is claimed as new.
 
 ## Licence
 
