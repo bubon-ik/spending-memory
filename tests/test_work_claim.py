@@ -206,3 +206,58 @@ def test_a_claim_survives_the_process_that_took_it(tmp_path) -> None:
         check=True,
     )
     assert result.stdout.strip() == "REFUSED"
+
+
+def test_without_a_scope_a_fixed_price_collapses_every_purchase_into_one(
+    tmp_path,
+) -> None:
+    """The failure metered pricing walks straight into, stated as a test.
+
+    Owner, merchant, payout address and amount is a good identity when the
+    amount is what distinguishes two purchases. It is a terrible one when every
+    call costs the same cent: two different questions become one payment, and
+    because a settled claim is permanent, the second one is refused forever.
+    """
+    memory = SpendingMemory.local(str(tmp_path / "memory.db"))
+    first = payment()
+    second = payment()
+
+    claim = memory.claim_payment(first)
+    assert claim is not None
+    memory.settle_claim(claim)
+
+    assert memory.claim_payment(second) is None
+
+
+def test_a_scope_is_what_tells_two_same_priced_payments_apart(tmp_path) -> None:
+    memory = SpendingMemory.local(str(tmp_path / "memory.db"))
+
+    claim = memory.claim_payment(payment(), scope="question-a")
+    assert claim is not None
+    memory.settle_claim(claim)
+
+    assert memory.claim_payment(payment(), scope="question-b") is not None
+    assert memory.claim_payment(payment(), scope="question-a") is None
+
+
+def test_a_scope_still_refuses_the_same_thing_asked_for_twice(tmp_path) -> None:
+    """The scope narrows what counts as identical. It does not switch the
+    protection off — a retry inside the window is still one payment."""
+    memory = SpendingMemory.local(str(tmp_path / "memory.db"))
+
+    assert memory.claim_payment(payment(), scope="question-a") is not None
+    assert memory.claim_payment(payment(), scope="question-a") is None
+
+
+def test_a_note_may_not_set_the_field_the_rules_read(tmp_path) -> None:
+    """Rule 6 counts escalations out of the journal, so a note that set
+    `action` would be a note that changes what the policy decides."""
+    memory = SpendingMemory.local(str(tmp_path / "memory.db"))
+
+    journal_id = memory.record_note(
+        evaluated=["a thing happened"], acted=["it was recorded"], extra={"kind": "x"}
+    )
+    assert journal_id
+
+    with pytest.raises(ValueError, match="may not set `action`"):
+        memory.record_note(evaluated=[], acted=[], extra={"action": "ESCALATE"})

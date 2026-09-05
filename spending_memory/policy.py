@@ -182,7 +182,9 @@ class SpendingPolicy:
 
         return decision
 
-    def authorise(self, payment: Payment) -> tuple[Decision, str | None]:
+    def authorise(
+        self, payment: Payment, *, claim_scope: str | None = None
+    ) -> tuple[Decision, str | None]:
         """Decide, and if the answer is PAY, take the claim.
 
         Returns the decision and the claim id. A PAY always comes back with a
@@ -193,16 +195,21 @@ class SpendingPolicy:
         Settle the claim when the money moves, release it when it does not.
         Deciding is separate from claiming on purpose — `decide` answers a
         question, `authorise` starts something.
+
+        `claim_scope` is for callers whose payments are not told apart by their
+        amount. It changes nothing for callers that omit it.
         """
         decision = self._decide_without_recording(payment)
         claim_id: str | None = None
 
         if decision.action is Action.PAY:
             claim_id = self.memory.claim_payment(
-                payment, ttl_seconds=self.claim_ttl_seconds
+                payment,
+                ttl_seconds=self.claim_ttl_seconds,
+                scope=claim_scope,
             )
             if claim_id is None:
-                decision = self._already_in_flight(payment)
+                decision = self._already_in_flight(payment, scope=claim_scope)
 
         return (
             replace(
@@ -250,8 +257,10 @@ class SpendingPolicy:
             },
         )
 
-    def _already_in_flight(self, payment: Payment) -> Decision:
-        held = self.memory.existing_claim(payment) or {}
+    def _already_in_flight(
+        self, payment: Payment, *, scope: str | None = None
+    ) -> Decision:
+        held = self.memory.existing_claim(payment, scope=scope) or {}
         settled = held.get("status") == "settled"
         return Decision(
             action=Action.BLOCK,

@@ -172,12 +172,20 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def claim_digest(payment: Payment) -> str:
+def claim_digest(payment: Payment, scope: str | None = None) -> str:
     """Stable identity for "this exact payment", short enough to be a key.
 
     Owner, merchant, payout address and amount: change any of them and it is a
     different intention to spend. Hashed rather than spelled out because a
     state key is not the place to publish who pays whom how much.
+
+    `scope` is for callers where the amount does **not** identify the purchase.
+    Metered pricing is the case that breaks the default: every subgraph query
+    costs exactly one cent, so without a scope every distinct question collapses
+    into one payment — and because a settled claim is permanent, the second
+    query an agent ever made would be refused forever as a duplicate of the
+    first. A caller that knows what distinguishes two of its payments says so
+    here. Callers that leave it out get exactly the behaviour they had.
     """
     material = "|".join(
         [
@@ -186,6 +194,7 @@ def claim_digest(payment: Payment) -> str:
             payment.pay_to_normalised,
             str(payment.amount_usd),
         ]
+        + ([scope] if scope else [])
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
@@ -343,9 +352,11 @@ class SpendingMemory:
         body = state.get("body") or {}
         return Decimal(str(body.get("total_usd", "0")))
 
-    def existing_claim(self, payment: Payment) -> dict[str, Any] | None:
+    def existing_claim(
+        self, payment: Payment, *, scope: str | None = None
+    ) -> dict[str, Any] | None:
         """The claim standing in the way of this payment, if there is one."""
-        state = self._client.get_state(self._claim_key(payment))
+        state = self._client.get_state(self._claim_key(payment, scope))
         if not state:
             return None
         body = dict(state.get("body") or {})
@@ -533,7 +544,11 @@ class SpendingMemory:
         return archived
 
     def claim_payment(
-        self, payment: Payment, *, ttl_seconds: int = CLAIM_TTL_SECONDS
+        self,
+        payment: Payment,
+        *,
+        ttl_seconds: int = CLAIM_TTL_SECONDS,
+        scope: str | None = None,
     ) -> str | None:
         """Claim the right to make this payment. None means someone already has it.
 
@@ -547,7 +562,7 @@ class SpendingMemory:
         the whole point: a hold that a deploy forgets is a hold that lets the
         same purchase happen twice.
         """
-        key = self._claim_key(payment)
+        key = self._claim_key(payment, scope)
         state = self._client.get_state(key)
         body = dict((state or {}).get("body") or {})
 
@@ -584,6 +599,39 @@ class SpendingMemory:
         """Give the claim back after a rejection, timeout or error."""
         self._update_claim(claim_id, status="released")
 
+    def record_note(
+        self,
+        *,
+        evaluated: list[str],
+        acted: list[str],
+        extra: dict[str, Any],
+    ) -> str:
+        """A journal line that is not a decision. Returns its id.
+
+        Adapters need to record things the five rules have no opinion about —
+        that a query was answered out of the journal instead of being paid for,
+        for instance. Those belong in the same journal as the decisions, in the
+        same order, because the question they answer together is "what did this
+        agent do and what did it cost".
+
+        `action` is refused rather than ignored. Rule 6 counts escalations by
+        reading `extra["action"]` out of the journal, so a note that set it
+        would be a note that changes what the policy decides — which is the one
+        thing a note must never do. `remember_settlement` writes an
+        action-less line for the same reason.
+        """
+        if "action" in extra:
+            raise ValueError(
+                "a note may not set `action`: the decision rules read it out "
+                "of the journal, so a note that set it would change what the "
+                "policy decides"
+            )
+        return self._client.write_event(
+            evaluated=list(evaluated),
+            acted=list(acted),
+            extra=dict(extra),
+        )
+
     def record_decision(self, payment: Payment, decision: Decision) -> str:
         """One journal line per decision, whatever the outcome.
 
@@ -609,8 +657,10 @@ class SpendingMemory:
 
     # -------------------------------------------------------------- internals
 
-    def _claim_key(self, payment: Payment) -> str:
-        return f"{CLAIM_STATE_PREFIX}:{payment.owner}:{claim_digest(payment)}"
+    def _claim_key(self, payment: Payment, scope: str | None = None) -> str:
+        return (
+            f"{CLAIM_STATE_PREFIX}:{payment.owner}:{claim_digest(payment, scope)}"
+        )
 
     @staticmethod
     def _claim_expired(body: dict[str, Any]) -> bool:
