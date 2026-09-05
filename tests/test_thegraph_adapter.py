@@ -530,3 +530,31 @@ def fetch(
         pay_and_fetch=pay_and_fetch,
         owner=owner,
     )
+
+
+def test_a_cached_answer_is_served_without_looking_at_the_payout_address(
+    tmp_path,
+) -> None:
+    """The journal is read before the network is touched, so a still-cached
+    question never sees a payout address at all.
+
+    That is right rather than a gap. The address check exists to stop money
+    going somewhere it should not, and here no money moves: the answer was
+    bought and paid for before the merchant moved. The very next question that
+    is *not* cached reaches the check and blocks, and the alert it raises stops
+    every other agent on this memory.
+    """
+    graph = build(tmp_path)
+    make_known(graph)
+    fetch(graph, query=QUERY)
+
+    cached = fetch(graph, query=QUERY, pay_to=ATTACKER)
+
+    assert cached.paid is False
+    assert cached.decision is None, "no payment was considered, so none was judged"
+    assert graph.policy.memory.open_alert("gateway.thegraph.com") is None
+
+    fresh = fetch(graph, query="{ tokens { id } }", pay_to=ATTACKER)
+
+    assert fresh.decision.action is Action.BLOCK
+    assert graph.policy.memory.open_alert("gateway.thegraph.com") is not None
