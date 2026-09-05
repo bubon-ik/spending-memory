@@ -1,13 +1,18 @@
 > **Hackathon judges — this repository was worked on across two events, and
 > which one you are judging changes what counts as new:**
 >
-> - **Sibyl Labs** — the memory layer *is* the submission. Judge
->   [**`v0.5.1`**](https://github.com/bubon-ik/spending-memory/tree/v0.5.1),
->   the tag as it stood at the end of that build window. Nothing after it
->   existed then.
-> - **ETHOnline 2026** — the memory layer is prior work; what was built for it
->   is paying The Graph per query, on top. The rest of that project is in
+> - **Sibyl Labs** — the memory layer *is* the submission: `store.py`,
+>   `policy.py`, `types.py`, the tests and the cold-start demo, finished at
+>   [`v0.5.1`](https://github.com/bubon-ik/spending-memory/tree/v0.5.1).
+>   **The Graph adapter and `skills/` are not offered here** — they were built
+>   for ETHOnline, and are only in the same repository because that is where
+>   the library lives.
+> - **ETHOnline 2026** — the reverse: the memory layer is prior work, and what
+>   was built for it is paying The Graph per query on top of it. The rest of
+>   that project is in
 >   [`bubon-ik/SingItAI`](https://github.com/bubon-ik/SingItAI).
+>
+> The two build windows overlap, so dates alone do not separate them. This does.
 >
 > Either way, the breakdown is under
 > [Prior work, and which event built what](#prior-work-and-which-event-built-what).
