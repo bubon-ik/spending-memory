@@ -2,8 +2,9 @@
 > which one you are judging changes what counts as new:**
 >
 > - **Sibyl Labs** — the memory layer *is* the submission: `store.py`,
->   `policy.py`, `types.py`, the tests and the cold-start demo, finished at
->   [`v0.5.1`](https://github.com/bubon-ik/spending-memory/tree/v0.5.1).
+>   `policy.py`, `types.py`, the tests, the demo, `docs/INTEGRATION.md` and the
+>   README you are reading, finished at
+>   [`sibyl-submission`](https://github.com/bubon-ik/spending-memory/tree/sibyl-submission) — the tag that state was submitted at.
 >   **The Graph adapter and `skills/` are not offered here** — they were built
 >   for ETHOnline, and are only in the same repository because that is where
 >   the library lives.
@@ -310,9 +311,15 @@ across two hackathons, and conflating them would flatter one of them.
 ### Built for ETHOnline 2026 — 5 September
 
 Everything in this subsection landed after
-[`v0.5.1`](https://github.com/bubon-ik/spending-memory/tree/v0.5.1), which is
-the tag the Sibyl Labs submission ends at and the commit the production gateway
-pins.
+[`sibyl-submission`](https://github.com/bubon-ik/spending-memory/tree/sibyl-submission), the tag the Sibyl Labs submission ends at.
+
+Two tags, because they answer different questions.
+[`v0.5.1`](https://github.com/bubon-ik/spending-memory/tree/v0.5.1) is the
+version the production gateway pins — the last release of the engine itself.
+`sibyl-submission` is six commits later and adds no engine code: the
+integration document, the fleet demo scene, the partner-stack section and the
+two production transactions. Those are Sibyl work, not ETHOnline work, and
+drawing the line at the version tag would have credited this event with them.
 
 Paying The Graph for subgraph queries. Everything else in this repository
 predates it.
