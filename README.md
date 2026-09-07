@@ -39,10 +39,12 @@ changed in the payment system and links each one at the commit it landed in —
 including a plain statement of which payment paths this covers and which it
 does not.
 
-**It decides real payments today.** Memory was seeded from that agent's own
-history — 22 delivered gift-card orders, 301.33 USD, buyers in the Czech
-Republic, Germany and Argentina — which makes the merchant `trusted` with a
-median order of 2.43 USD. Then, on production, on Base mainnet: the first
+**It decides real payments today.** Its memory is that agent's own trading
+history: **22 gift-card orders that real customers paid for and received** —
+301.33 USD, buyers in the Czech Republic, Germany and Argentina — read out of
+the production order store, which is what makes that merchant `trusted` with a
+median order of 2.43 USD. None of it is synthetic, and none of it was generated
+for a demo. Then, on production, on Base mainnet: the first
 purchase from an x402 API nobody had paid before was escalated to a human and
 approved
 ([`0xafc64a…`](https://basescan.org/tx/0xafc64a25dad22f5249cf74554562071dbcb44d4c3a331af4af823fb8b77a0035)),
@@ -78,7 +80,24 @@ The decision itself is [`spending_memory/policy.py`](spending_memory/policy.py),
 about eighty lines. Every branch is decided by a value that came out of the table
 above.
 
+### For a judge: every claim, at the line that makes it true
+
+Four patterns, each reachable in under two minutes. Recall across sessions is the
+floor here, not the ceiling — these are the three that go past it, plus the
+journal that is read rather than filed.
+
+| Claim | Where it happens |
+|---|---|
+| **Shared state.** One agent's refusal protects an agent serving a *different* owner | writes the fleet alert [`store.py:289`](spending_memory/store.py#L289) · reads it [`store.py:273`](spending_memory/store.py#L273) · blocks on it [`policy.py:313`](spending_memory/policy.py#L313) |
+| …and what stays private to one owner, so a refusal is not shared by mistake | [`store.py:253`](spending_memory/store.py#L253) |
+| **Dynamic storage.** The record changes with use: a merchant is promoted as it earns evidence, and the price band *tightens* accordingly | promotion [`store.py:445`](spending_memory/store.py#L445) · band chosen from status [`policy.py:145`](spending_memory/policy.py#L145) · dormant merchants archived so they are asked about again [`store.py:509`](spending_memory/store.py#L509) |
+| **Work-claim.** A payment is claimed before it is made, so it cannot be made twice — and the claim outlives the process | claim [`store.py:546`](spending_memory/store.py#L546) · settle [`store.py:594`](spending_memory/store.py#L594) · release [`store.py:598`](spending_memory/store.py#L598) · refusal [`policy.py:260`](spending_memory/policy.py#L260) |
+| **The journal is read, not filed.** A rule no entity record can answer | written with what the rule queries on [`store.py:635`](spending_memory/store.py#L635) · read back [`store.py:369`](spending_memory/store.py#L369) · the rule [`policy.py:221`](spending_memory/policy.py#L221) |
+
 ### Remove the memory and the product stops
+
+**Delete the memory and a second user walks straight into the merchant the
+first user's agent already refused.**
 
 Not "gets worse" — stops. Three ways, all of them demonstrable:
 
