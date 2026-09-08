@@ -376,6 +376,7 @@ class SpendingMemory:
         merchant: str | None = None,
         owner: str | None = None,
         action: str | None = None,
+        rules: tuple[str, ...] | None = None,
         within_seconds: int = 3600,
         limit: int = JOURNAL_READ_LIMIT,
     ) -> list[dict[str, Any]]:
@@ -399,6 +400,8 @@ class SpendingMemory:
             if owner is not None and extra.get("owner") != owner:
                 continue
             if action is not None and extra.get("action") != action:
+                continue
+            if rules is not None and str(extra.get("rule") or "") not in rules:
                 continue
             stamped = _parse_timestamp(entry.get("ts"))
             if stamped is None or stamped < cutoff:

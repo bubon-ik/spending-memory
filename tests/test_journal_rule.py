@@ -176,3 +176,49 @@ def test_deleting_the_journal_makes_the_rule_unreachable(
 
     assert memory.recent_decisions(merchant=MERCHANT) == []
     assert policy.decide(payment()).action is Action.PAY
+
+
+def test_meeting_a_new_merchant_is_not_evidence_against_them(
+    policy: SpendingPolicy, memory: SpendingMemory, db: str
+) -> None:
+    """Adoption is not an incident.
+
+    Three owners paying a seller for the first time produce three escalations,
+    and counting those would block the merchant exactly as people start using
+    them. What is being measured is the merchant's behaviour, and having no
+    history with someone is a fact about us.
+    """
+    for owner in ("telegram:1", "telegram:2", "telegram:3"):
+        decision = policy.decide(payment(owner=owner))
+        assert decision.rule == "unknown_merchant"
+
+    assert policy.decide(payment(owner="telegram:4")).rule == "unknown_merchant"
+
+    # This is the production failure: the journal rule is reached only after
+    # the merchant becomes known, so another unknown-merchant check misses it.
+    memory.remember_settlement(payment(owner="telegram:4"), tx_id="0xfirst")
+    assert policy.decide(payment(owner="telegram:4")).action is Action.PAY
+
+    # A fresh process must retain the correction as well as the learned seller.
+    reopened = SpendingPolicy(SpendingMemory.local(db), daily_cap_usd=Decimal("500"))
+    assert reopened.decide(payment(owner="telegram:4")).action is Action.PAY
+
+
+def test_one_owner_out_of_allowance_does_not_stop_the_others(
+    memory: SpendingMemory
+) -> None:
+    """A daily cap is a fact about the owner, not about the seller.
+
+    Counted, it would let one heavy spender shut a merchant off for everybody
+    else on the same gateway.
+    """
+    tight = SpendingPolicy(memory, daily_cap_usd=Decimal("30"))
+    for _ in range(4):
+        memory.remember_settlement(payment(owner="telegram:spender"), tx_id="0xtest")
+
+    over_cap = [tight.decide(payment(owner="telegram:spender")) for _ in range(3)]
+    assert [d.rule for d in over_cap] == ["daily_cap"] * 3
+
+    # The merchant is known to everyone from the spender's settlements, and
+    # this owner has spent nothing today.
+    assert tight.decide(payment(owner="telegram:other")).action is Action.PAY

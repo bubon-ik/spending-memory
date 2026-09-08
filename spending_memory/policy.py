@@ -70,6 +70,18 @@ proportion to how much it actually knows.
 """
 
 
+MERCHANT_BEHAVIOUR_RULES = ("price_spike", "previously_rejected")
+"""Which escalations say something about the *merchant*.
+
+Not every escalation is evidence about a seller. `unknown_merchant` says only
+that nobody has paid them yet — three owners meeting a new merchant is adoption,
+and stopping them would block a seller exactly as people start using it.
+`daily_cap` says an owner is out of allowance, which is a fact about that owner:
+counting it would let one heavy spender shut a merchant off for everybody.
+
+What is left is behaviour: prices that moved, and owners who said no.
+"""
+
 ESCALATION_LIMIT = 3
 """How many escalations for one merchant, inside the window, is too many."""
 
@@ -130,6 +142,7 @@ class SpendingPolicy:
         price_spike_factor: Decimal | None = None,
         claim_ttl_seconds: int = CLAIM_TTL_SECONDS,
         escalation_limit: int = ESCALATION_LIMIT,
+        escalation_rules: tuple[str, ...] = MERCHANT_BEHAVIOUR_RULES,
         escalation_window_seconds: int = ESCALATION_WINDOW_SECONDS,
     ) -> None:
         if daily_cap_usd <= 0:
@@ -138,6 +151,7 @@ class SpendingPolicy:
         self.daily_cap_usd = daily_cap_usd
         self.claim_ttl_seconds = claim_ttl_seconds
         self.escalation_limit = escalation_limit
+        self.escalation_rules = escalation_rules
         self.escalation_window_seconds = escalation_window_seconds
         self.price_spike_factor = price_spike_factor
         """One band for every merchant, or None to choose it by their status."""
@@ -229,6 +243,7 @@ class SpendingPolicy:
         escalations = self.memory.recent_decisions(
             merchant=payment.merchant,
             action=Action.ESCALATE.value,
+            rules=self.escalation_rules,
             within_seconds=self.escalation_window_seconds,
         )
         if len(escalations) < self.escalation_limit:
