@@ -1,7 +1,10 @@
+wallet address: 0x343CAc639Cf667Db581361D55BE8cbf712797C1b
+
 # Spending Memory
 
 An agent that spends your money should remember what it already spent it on.
 Otherwise every purchase is the first one, and it has to ask you every time.
+
 
 This is the layer that decides whether a payment needs its owner. It reads what
 the agent remembers — who it paid, at which address, what things normally cost,
